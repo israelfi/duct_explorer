@@ -62,7 +62,30 @@ class DuctExplorer:
                 self.robot_pos[2] = T.transform.translation.z
 
     def follow_corridor(self):
-        pass
+        d = 0.2  # distance used in feedback linearization
+        kf = 1  # convergence gain
+        vr = 0.5  # linear velocity reference
+
+        dist_r, phi_r = self.closest_obstacle(right_side=True)
+        dist_l, phi_l = self.closest_obstacle(right_side=False)
+
+        alpha = (phi_l - phi_r - pi) / 2.0
+
+        phi_D = phi_r + alpha
+        phi_T = phi_r + alpha + pi / 2.0
+
+        D = (dist_l - dist_r) / (2 * np.cos(alpha))
+
+        G = -(2 / pi) * atan(kf * D)
+        H = sqrt(1 - G * G)
+
+        vx = G * cos(phi_D) + H * cos(phi_T)  # (body)
+        vy = G * sin(phi_D) + H * sin(phi_T)  # (body)
+
+        v = vr * (vx)
+        omega = vr * (vy / (d * 0.5))  # Angular rotation
+
+        return v, omega
 
     def feedback_linearization(self):
         pass
