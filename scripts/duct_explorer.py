@@ -70,7 +70,6 @@ class DuctExplorer:
                 self.robot_pos[2] = T.transform.translation.z
 
     def closest_obstacle(self, right_side=True, half=None):
-        print(self.laser['ranges'].shape[0])
         if half is None:
             half = int(self.laser['ranges'].shape[0] / 2)
         if right_side:
@@ -86,7 +85,7 @@ class DuctExplorer:
     def follow_corridor(self):
         d = 0.15  # distance used in feedback linearization
         kf = 1  # convergence gain
-        vr = 0.5  # linear velocity reference
+        vr = 0.25  # linear velocity reference
 
         dist_r, phi_r, index_r = self.closest_obstacle(right_side=True, half=self.half)
         dist_l, phi_l, index_l = self.closest_obstacle(right_side=False, half=self.half)
@@ -109,12 +108,30 @@ class DuctExplorer:
 
         return v, omega
 
+    def follow_wall(self):
+        d = 0.15  # distance used in feedback linearization
+        kf = 1  # convergence gain
+        vr = 0.25  # linear velocity reference
+        epsilon = 0.6
+
+        # half = -1 so it will get all beams
+        delta_m, phi_m, index_r = self.closest_obstacle(right_side=False)
+
+        G = (2 / pi) * atan(kf * (delta_m - epsilon))
+        H = - sqrt(1 - G * G)  # + right side to the wall; - left side to the wall
+
+        v = vr * (cos(phi_m) * G - sin(phi_m) * H)
+        omega = vr * (sin(phi_m) * G / d + cos(phi_m) * H / d)
+
+        return v, omega
+
     def feedback_linearization(self):
         pass
 
     def main_service(self):
         while not rospy.is_shutdown():
-            v, w = self.follow_corridor()
+            # v, w = self.follow_corridor()
+            v, w = self.follow_wall()
             self.vel.linear.x = v
             self.vel.angular.z = w
 
