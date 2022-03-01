@@ -39,6 +39,11 @@ class DuctExplorer:
         self.rate.sleep()
 
     def callback_laser(self, data: LaserScan):
+        """
+        Callback routine to get the data from the laser sensor
+        Args:
+            data: laser data
+        """
         self.laser['ranges'] = np.array(data.ranges)
         self.laser['angle_min'] = data.angle_min
         self.laser['angle_max'] = data.angle_max
@@ -54,6 +59,11 @@ class DuctExplorer:
         self.laser['angles'] = np.array(self.laser['angles'])
 
     def callback_pose(self, data):
+        """
+        Callback routine to get the pose information of the robot
+        Args:
+            data: data from the TF topic
+        """
         for T in data.transforms:
             # Choose the transform of the EspeleoRobo
             if T.child_frame_id == "base_link":
@@ -70,6 +80,16 @@ class DuctExplorer:
                 self.robot_pos[2] = T.transform.translation.z
 
     def closest_obstacle(self, right_side=True, half=None):
+        """
+        Returns the closest obstacle to the robot using a laser sensor.
+        Args:
+            right_side: a boolean indicating it is desired to know the closest obstacle on the right side (True) or on
+            the left side (False)
+            half: an integer informing where to section the right and left side.
+
+        Returns: a tuple with the minimum distance of the closest obstacle, the angle where this distance was measured
+        and the index of this measurement in the laser vector
+        """
         if half is None:
             half = int(self.laser['ranges'].shape[0] / 2)
         if right_side:
@@ -83,6 +103,10 @@ class DuctExplorer:
         return min_dist, angle_of_closest_obstacle, index
 
     def follow_corridor(self):
+        """
+        Control method to follow a corridor in the center of it
+        Returns: linear and angular velocities in the robot frame
+        """
         d = 0.15  # distance used in feedback linearization
         kf = 1  # convergence gain
         vr = 0.25  # linear velocity reference
@@ -103,12 +127,16 @@ class DuctExplorer:
         vx = G * cos(phi_D) + H * cos(phi_T)  # (body)
         vy = G * sin(phi_D) + H * sin(phi_T)  # (body)
 
-        v = vr * (vx)
+        v = vr * vx
         omega = vr * (vy / (d * 0.5))  # Angular rotation
 
         return v, omega
 
     def follow_wall(self):
+        """
+        Control method to follow a wall
+        Returns: linear and angular velocities in the robot frame
+        """
         d = 0.15  # distance used in feedback linearization
         kf = 1  # convergence gain
         vr = 0.25  # linear velocity reference
@@ -124,9 +152,6 @@ class DuctExplorer:
         omega = vr * (sin(phi_m) * G / d + cos(phi_m) * H / d)
 
         return v, omega
-
-    def feedback_linearization(self):
-        pass
 
     def main_service(self):
         while not rospy.is_shutdown():
