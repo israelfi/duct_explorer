@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+
+<launch>
+    <!--Node that navigates the robot through the duct-->
+	<node pkg = "duct_explorer_ros" name = "duct_explorer" type = "duct_explorer.py" args="" output="screen"> </node>
+    <!--Bifurcation identification-->
+    <node pkg = "duct_explorer_ros" name = "graph_handler" type = "graph_handler.py" args="" output="screen"> </node>
+</launch>

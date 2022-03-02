@@ -1,0 +1,6 @@
+matplotlib==3.5.1
+networkx==2.7
+numpy==1.22.2
+rospy==1.15.14
+sensor_msgs==1.13.1
+tf==1.13.2

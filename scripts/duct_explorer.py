@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 import numpy as np
 import rospy
-import roslib
-from sensor_msgs.msg import Joy
 from tf.transformations import euler_from_quaternion
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
@@ -22,6 +20,7 @@ class DuctExplorer:
         self.robot_angles = np.zeros(3)  # Euler angles
         self.laser = {'ranges': [], 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
 
+        # Topics that this node interacts with
         self.pub_cmd_vel = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         rospy.Subscriber("/scan", LaserScan, self.callback_laser)
