@@ -3,6 +3,7 @@
 import rospy
 import numpy as np
 import networkx as nx
+import matplotlib.pyplot as plt
 from datetime import datetime
 
 from tf.transformations import euler_from_quaternion
@@ -16,8 +17,13 @@ class GraphHandler:
         self.freq = 10
         self.rate = rospy.Rate(self.freq)
 
-        self.min_angle = 10
+        self.G = nx.Graph()
+        self.node_count = 0
+
+        self.min_angle = 25
         self.min_dist = 3
+
+        self.stage = 0
 
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
@@ -25,6 +31,10 @@ class GraphHandler:
                       'angle_increment': 0.0}
         rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         rospy.Subscriber("/scan", LaserScan, self.callback_laser)
+
+        self.setup_ready = False
+        self.bifurcation_count = 0
+        self.dead_end_count = 0
 
         self.rate.sleep()
 
@@ -48,9 +58,9 @@ class GraphHandler:
         number_of_beams = int((self.laser['angle_max'] - self.laser['angle_min']) / self.laser['angle_increment'])
 
         angle = self.laser['angle_min']
-        self.laser['angles'] = []
+        self.laser['angles'] = np.zeros(number_of_beams)
         for i in range(number_of_beams):
-            self.laser['angles'].append(angle)
+            self.laser['angles'][i] = angle
             angle += self.laser['angle_increment']
         self.laser['angles'] = np.array(self.laser['angles'])
 
@@ -75,11 +85,14 @@ class GraphHandler:
                 self.robot_pos[1] = T.transform.translation.y
                 self.robot_pos[2] = T.transform.translation.z
 
+        self.setup_ready = True
+
     def detect_bifurcation(self):
+        front = 60
         angles = []
-        for i in range(self.laser['ranges'].shape[0]):
-            if self.laser['ranges'][i] > self.min_dist:
-                angles.append(self.laser['angles'][i])
+        for i in range(self.laser['ranges'][front:-front].shape[0]):
+            if self.laser['ranges'][front:-front][i] > self.min_dist:
+                angles.append(self.laser['angles'][front:-front][i])
         if not angles:
             return
 
@@ -93,11 +106,65 @@ class GraphHandler:
         bifurcation_directions = []
         for i in range(len(beam_groups)):
             bifurcation_directions.append(np.mean(beam_groups[i]))
-        self.message_log(f"{bifurcation_directions}")
+        # self.message_log(f"{bifurcation_directions}")
+        return len(bifurcation_directions) > 1
+
+    def detect_dead_end(self):
+        min_dist_to_detect_dead_end = 1
+        if np.mean(self.laser['ranges']) < min_dist_to_detect_dead_end:
+            self.message_log('Dead end')
+            return True
+        return False
+
+    def add_first_node(self):
+        self.G.add_node(self.node_count, pos=(self.robot_pos[0], self.robot_pos[1]), type='start')
+
+    def draw_graph(self):
+        color_map = []
+        node_types = nx.get_node_attributes(self.G, 'type')
+        for node in self.G:
+            type = node_types[node]
+            if type == 'start':
+                color_map.append('black')
+            elif type == 'bifurcation':
+                color_map.append('blue')
+            elif type == 'dead end':
+                color_map.append('red')
+
+        pos = nx.get_node_attributes(self.G, 'pos')
+        nx.draw(self.G, pos, node_color=color_map)
+        plt.pause(0.01)
+
+    def state_machine(self):
+        if self.detect_bifurcation():
+            self.message_log('Bifurcation')
+            self.bifurcation_count += 1
+            if self.bifurcation_count > 10:
+                self.bifurcation_count = 0
+                self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type='bifurcation')
+                self.G.add_edge(self.node_count, self.node_count + 1)
+                self.node_count += 1
+                while self.detect_bifurcation():
+                    continue
+
+        elif self.detect_dead_end():
+            self.message_log('Dead end')
+            self.dead_end_count += 1
+            if self.dead_end_count > 10:
+                self.dead_end_count = 0
+                self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type='dead end')
+                self.G.add_edge(self.node_count, self.node_count + 1)
+                self.node_count += 1
+                while self.detect_dead_end():
+                    continue
 
     def main_service(self):
+        while not self.setup_ready:
+            continue
+        self.add_first_node()
         while not rospy.is_shutdown():
-            self.detect_bifurcation()
+            self.state_machine()
+            self.draw_graph()
             self.rate.sleep()
 
 
