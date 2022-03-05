@@ -21,7 +21,7 @@ class GraphHandler:
         self.node_count = 0
 
         self.min_angle = 25
-        self.min_dist = 3
+        self.min_dist_to_detect_bifurcation = 4
 
         self.stage = 0
 
@@ -87,18 +87,22 @@ class GraphHandler:
 
         self.setup_ready = True
 
+    @staticmethod
+    def euclidian_distance(p1, p2):
+        return np.sqrt(pow(p1[0] - p2[0], 2) + pow(p1[1] - p2[1], 2))
+
     def detect_bifurcation(self):
         front = 60
         angles = []
         for i in range(self.laser['ranges'][front:-front].shape[0]):
-            if self.laser['ranges'][front:-front][i] > self.min_dist:
+            if self.laser['ranges'][front:-front][i] > self.min_dist_to_detect_bifurcation:
                 angles.append(self.laser['angles'][front:-front][i])
         if not angles:
             return
 
         beam_groups = [[angles[0]]]
         for i in range(len(angles) - 1):
-            if abs(np.rad2deg(angles[i + 1]) - np.rad2deg(angles[i])) < 10:
+            if abs(np.rad2deg(angles[i + 1]) - np.rad2deg(angles[i])) < self.min_angle:
                 beam_groups[-1].append(angles[i + 1])
             else:
                 beam_groups.append([angles[i + 1]])
@@ -111,10 +115,7 @@ class GraphHandler:
 
     def detect_dead_end(self):
         min_dist_to_detect_dead_end = 1
-        if np.mean(self.laser['ranges']) < min_dist_to_detect_dead_end:
-            self.message_log('Dead end')
-            return True
-        return False
+        return np.mean(self.laser['ranges']) < min_dist_to_detect_dead_end
 
     def add_first_node(self):
         self.G.add_node(self.node_count, pos=(self.robot_pos[0], self.robot_pos[1]), type='start')
@@ -123,21 +124,39 @@ class GraphHandler:
         color_map = []
         node_types = nx.get_node_attributes(self.G, 'type')
         for node in self.G:
-            type = node_types[node]
-            if type == 'start':
+            node_type = node_types[node]
+            if node_type == 'start':
                 color_map.append('black')
-            elif type == 'bifurcation':
+            elif node_type == 'bifurcation':
                 color_map.append('blue')
-            elif type == 'dead end':
+            elif node_type == 'dead end':
                 color_map.append('red')
 
         pos = nx.get_node_attributes(self.G, 'pos')
         nx.draw(self.G, pos, node_color=color_map)
         plt.pause(0.01)
 
+    def check_repeated_nodes(self):
+        node_positions = nx.get_node_attributes(self.G, 'pos')
+        for i in range(self.G.number_of_nodes()):
+            for j in range(i + 1, self.G.number_of_nodes()):
+                d = self.euclidian_distance(node_positions[i], node_positions[j])
+                self.message_log(f'Nodes {i} and {j} are {d} meters close.')
+
+                # If two nodes are close to each other, it is considered that they are only one node
+                if d < 1.9:
+                    self.message_log(f'Nodes {i} and {j} are {d} meters close. Removing {j}.')
+                    # Nodes connected to the repeated node j
+                    nodes_connected = [x[1] for x in self.G.edges(j)]
+                    self.G.remove_node(j)
+                    self.node_count -= 1
+                    for k in nodes_connected:
+                        self.G.add_edge(i, k)
+                    break
+
     def state_machine(self):
         if self.detect_bifurcation():
-            self.message_log('Bifurcation')
+            # self.message_log('Bifurcation')
             self.bifurcation_count += 1
             if self.bifurcation_count > 10:
                 self.bifurcation_count = 0
@@ -148,7 +167,7 @@ class GraphHandler:
                     continue
 
         elif self.detect_dead_end():
-            self.message_log('Dead end')
+            # self.message_log('Dead end')
             self.dead_end_count += 1
             if self.dead_end_count > 10:
                 self.dead_end_count = 0
@@ -165,6 +184,7 @@ class GraphHandler:
         while not rospy.is_shutdown():
             self.state_machine()
             self.draw_graph()
+            self.check_repeated_nodes()
             self.rate.sleep()
 
 
