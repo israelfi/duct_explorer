@@ -18,6 +18,10 @@ class DistanceMeasurer:
 
         self.distance = 0.0
 
+        self.espeleo = EspeleoDifferential()
+        rospy.init_node('distance_measurer', anonymous=True)
+        self.msg = String()
+
         # Motor velocities
         self.motor_velocity = np.zeros(6)
 
@@ -30,9 +34,6 @@ class DistanceMeasurer:
         rospy.Subscriber("/device5/get_joint_state", JointState, self.motor5_callback)
         rospy.Subscriber("/device6/get_joint_state", JointState, self.motor6_callback)
 
-        self.espeleo = EspeleoDifferential()
-        rospy.init_node('distance_measurer', anonymous=True)
-        self.msg = String()
         rospy.spin()
 
     @staticmethod
@@ -72,7 +73,8 @@ class DistanceMeasurer:
 
         # Calculating distance variation
         dt = self.current_time - self.last_time
-        dist_dt = v_espeleo * dt
+        self.last_time = self.current_time
+        dist_dt = v_espeleo * dt if v_espeleo * dt > 0.005 else 0
 
         # Integrations
         self.distance += dist_dt

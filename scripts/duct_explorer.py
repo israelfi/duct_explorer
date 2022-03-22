@@ -18,7 +18,7 @@ class DuctExplorer:
         # Data used by this node
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
-        self.laser = {'ranges': [], 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
+        self.laser = {'ranges': np.array([]), 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
 
         # Topics that this node interacts with
         self.pub_cmd_vel = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
@@ -34,10 +34,12 @@ class DuctExplorer:
         self.vel.angular.z = 0
 
         self.half = 120
+        self.started_pose = False
+        self.started_laser = False
 
         self.rate.sleep()
 
-    def callback_laser(self, data: LaserScan):
+    def callback_laser(self, data):
         """
         Callback routine to get the data from the laser sensor
         Args:
@@ -56,6 +58,7 @@ class DuctExplorer:
             self.laser['angles'].append(angle)
             angle += self.laser['angle_increment']
         self.laser['angles'] = np.array(self.laser['angles'])
+        self.started_laser = True
 
     def callback_pose(self, data):
         """
@@ -77,6 +80,7 @@ class DuctExplorer:
                 self.robot_pos[0] = T.transform.translation.x
                 self.robot_pos[1] = T.transform.translation.y
                 self.robot_pos[2] = T.transform.translation.z
+        self.started_pose = True
 
     def closest_obstacle(self, right_side=True, half=None):
         """
@@ -153,6 +157,8 @@ class DuctExplorer:
         return v, omega
 
     def main_service(self):
+        while not self.started_pose and not self.started_laser:
+            continue
         while not rospy.is_shutdown():
             # v, w = self.follow_corridor()
             v, w = self.follow_wall()
