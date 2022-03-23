@@ -19,8 +19,9 @@ class GraphHandler:
 
         self.G = nx.Graph()
         self.node_count = 0
+        self.previous_node = None
 
-        self.min_angle = 25
+        self.min_angle = 20
         self.min_dist_to_detect_bifurcation = 4
 
         self.stage = 0
@@ -72,7 +73,7 @@ class GraphHandler:
         """
         for T in data.transforms:
             # Choose the transform of the EspeleoRobo
-            if T.child_frame_id == "base_link":
+            if T.child_frame_id == "espeleo_robo/base_link":
                 # Get the orientation
                 x_q = T.transform.rotation.x
                 y_q = T.transform.rotation.y
@@ -121,6 +122,7 @@ class GraphHandler:
         self.G.add_node(self.node_count, pos=(self.robot_pos[0], self.robot_pos[1]), type='start')
 
     def draw_graph(self):
+        plt.clf()
         color_map = []
         node_types = nx.get_node_attributes(self.G, 'type')
         for node in self.G:
@@ -134,22 +136,30 @@ class GraphHandler:
 
         pos = nx.get_node_attributes(self.G, 'pos')
         nx.draw(self.G, pos, node_color=color_map)
-        plt.pause(0.01)
+        plt.pause(0.1)
+
+    def plot_laser_line(self):
+        plt.clf()
+        y = self.laser['ranges']
+        plt.plot(y, '-o')
+        plt.pause(0.1)
 
     def check_repeated_nodes(self):
         node_positions = nx.get_node_attributes(self.G, 'pos')
         for i in range(self.G.number_of_nodes()):
             for j in range(i + 1, self.G.number_of_nodes()):
                 d = self.euclidian_distance(node_positions[i], node_positions[j])
-                self.message_log(f'Nodes {i} and {j} are {d} meters close.')
+                # self.message_log(f'Nodes {i} and {j} are {d} meters close.')
 
                 # If two nodes are close to each other, it is considered that they are only one node
                 if d < 1.9:
                     self.message_log(f'Nodes {i} and {j} are {d} meters close. Removing {j}.')
                     # Nodes connected to the repeated node j
                     nodes_connected = [x[1] for x in self.G.edges(j)]
+                    self.previous_node = i
                     self.G.remove_node(j)
                     self.node_count -= 1
+                    self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
                     for k in nodes_connected:
                         self.G.add_edge(i, k)
                     break
@@ -159,10 +169,16 @@ class GraphHandler:
             # self.message_log('Bifurcation')
             self.bifurcation_count += 1
             if self.bifurcation_count > 10:
+                self.message_log('Bifurcation')
                 self.bifurcation_count = 0
                 self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type='bifurcation')
-                self.G.add_edge(self.node_count, self.node_count + 1)
+                if self.previous_node is not None:
+                    self.G.add_edge(self.previous_node, self.node_count + 1)
+                    self.previous_node = None
+                else:
+                    self.G.add_edge(self.node_count, self.node_count + 1)
                 self.node_count += 1
+                self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
                 while self.detect_bifurcation():
                     continue
 
@@ -170,10 +186,16 @@ class GraphHandler:
             # self.message_log('Dead end')
             self.dead_end_count += 1
             if self.dead_end_count > 10:
+                self.message_log('Dead end')
                 self.dead_end_count = 0
                 self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type='dead end')
-                self.G.add_edge(self.node_count, self.node_count + 1)
+                if self.previous_node is not None:
+                    self.G.add_edge(self.previous_node, self.node_count + 1)
+                    self.previous_node = None
+                else:
+                    self.G.add_edge(self.node_count, self.node_count + 1)
                 self.node_count += 1
+                self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
                 while self.detect_dead_end():
                     continue
 
@@ -181,9 +203,11 @@ class GraphHandler:
         while not self.setup_ready:
             continue
         self.add_first_node()
+        # print(self.robot_pos[0], self.robot_pos[1])
         while not rospy.is_shutdown():
             self.state_machine()
             self.draw_graph()
+            # self.plot_laser_line()
             self.check_repeated_nodes()
             self.rate.sleep()
 
