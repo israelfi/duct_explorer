@@ -68,7 +68,8 @@ class DuctExplorer:
         """
         for T in data.transforms:
             # Choose the transform of the EspeleoRobo
-            if T.child_frame_id == "base_link":
+            # base_init, base_link, espeleo_robo/base_link
+            if T.child_frame_id == "espeleo_robo/base_link":
                 # Get the orientation
                 x_q = T.transform.rotation.x
                 y_q = T.transform.rotation.y

@@ -9,6 +9,7 @@ from datetime import datetime
 from tf.transformations import euler_from_quaternion
 from sensor_msgs.msg import LaserScan
 from tf2_msgs.msg import TFMessage
+from nav_msgs.msg import Odometry
 
 
 class GraphHandler:
@@ -30,8 +31,10 @@ class GraphHandler:
         self.robot_angles = np.zeros(3)  # Euler angles
         self.laser = {'ranges': np.array([]), 'angles': np.array([]), 'angle_min': 0.0, 'angle_max': 0.0,
                       'angle_increment': 0.0}
+
         rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         rospy.Subscriber("/scan", LaserScan, self.callback_laser)
+        # rospy.Subscriber("/odom", Odometry, self.callback_odometry)
 
         self.setup_ready = False
         self.bifurcation_count = 0
@@ -64,6 +67,12 @@ class GraphHandler:
             self.laser['angles'][i] = angle
             angle += self.laser['angle_increment']
         self.laser['angles'] = np.array(self.laser['angles'])
+
+    def callback_odometry(self, data):
+        self.robot_pos[0] = data.pose.pose.position.x
+        self.robot_pos[1] = data.pose.pose.position.y
+        self.robot_pos[2] = data.pose.pose.position.z
+        self.setup_ready = True
 
     def callback_pose(self, data):
         """
@@ -141,7 +150,13 @@ class GraphHandler:
     def plot_laser_line(self):
         plt.clf()
         y = self.laser['ranges']
+        min_dist = np.ones(y.shape[0]) * self.min_dist_to_detect_bifurcation
+        plt.plot(min_dist, 'r--')
         plt.plot(y, '-o')
+        plt.ylim([0, 8])
+        plt.title('Laser Measurements')
+        plt.ylabel('Distance (m)')
+        plt.xlabel('Angle (deg)')
         plt.pause(0.1)
 
     def check_repeated_nodes(self):
@@ -152,7 +167,7 @@ class GraphHandler:
                 # self.message_log(f'Nodes {i} and {j} are {d} meters close.')
 
                 # If two nodes are close to each other, it is considered that they are only one node
-                if d < 1.9:
+                if d < 1.5:
                     self.message_log(f'Nodes {i} and {j} are {d} meters close. Removing {j}.')
                     # Nodes connected to the repeated node j
                     nodes_connected = [x[1] for x in self.G.edges(j)]
@@ -168,7 +183,7 @@ class GraphHandler:
         if self.detect_bifurcation():
             # self.message_log('Bifurcation')
             self.bifurcation_count += 1
-            if self.bifurcation_count > 10:
+            if self.bifurcation_count > 15:
                 self.message_log('Bifurcation')
                 self.bifurcation_count = 0
                 self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type='bifurcation')
