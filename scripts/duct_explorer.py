@@ -6,7 +6,7 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 from tf2_msgs.msg import TFMessage
 
-from math import sqrt, cos, sin, atan, pi
+from math import sqrt, cos, sin, atan, pi, atan2
 
 
 class DuctExplorer:
@@ -19,6 +19,7 @@ class DuctExplorer:
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
         self.laser = {'ranges': np.array([]), 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
+        self.virtual_laser = {'ranges': [], 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
 
         # Topics that this node interacts with
         self.pub_cmd_vel = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
@@ -83,27 +84,69 @@ class DuctExplorer:
                 self.robot_pos[2] = T.transform.translation.z
         self.started_pose = True
 
-    def closest_obstacle(self, right_side=True, half=None):
+    def create_virtual_laser(self, dist=0.2):
+        """
+        Simulates a laser in front of real laser sensor
+        Args:
+            dist: how far the virtual laser will be in front of the current position
+        Returns:
+        """
+        self.virtual_laser['angle_min'] = self.laser['angle_min']
+        self.virtual_laser['angle_max'] = self.laser['angle_max']
+        self.virtual_laser['angle_increment'] = self.laser['angle_increment']
+
+        self.virtual_laser['ranges'] = []
+        self.virtual_laser['angles'] = []
+        for i in range(self.laser['ranges'].shape[0]):
+            x = self.laser['ranges'][i] * np.cos(self.laser['angles'][i])
+            y = self.laser['ranges'][i] * np.sin(self.laser['angles'][i])
+
+            x -= dist
+
+            d = np.sqrt(x ** 2 + y ** 2)
+            th = atan2(y, x)
+            self.virtual_laser['ranges'].append(d)
+            self.virtual_laser['angles'].append(th)
+        new_data = []
+        for i in range(len(self.virtual_laser['ranges'])):
+            new_data.append((self.virtual_laser['ranges'][i], self.virtual_laser['angles'][i]))
+
+        # Ordering using angle
+        new_data.sort(key=lambda k: k[1])
+
+        for i in range(len(self.virtual_laser['ranges'])):
+            self.virtual_laser['ranges'][i] = new_data[i][0]
+            self.virtual_laser['angles'][i] = new_data[i][1]
+        self.virtual_laser['ranges'] = np.array(self.virtual_laser['ranges'])
+        self.virtual_laser['angles'] = np.array(self.virtual_laser['angles'])
+
+    def closest_obstacle(self, right_side=True, half=None, virtual_laser=False):
         """
         Returns the closest obstacle to the robot using a laser sensor.
         Args:
             right_side: a boolean indicating it is desired to know the closest obstacle on the right side (True) or on
             the left side (False)
-            half: an integer informing where to section the right and left side.
+            half: an integer informing where to section the right and left side
+            virtual_laser: bool to indicate if must use a virtual laser
 
         Returns: a tuple with the minimum distance of the closest obstacle, the angle where this distance was measured
         and the index of this measurement in the laser vector
         """
-        if half is None:
-            half = int(self.laser['ranges'].shape[0] / 2)
-        if right_side:
-            min_dist = np.min(self.laser['ranges'][:half])
-            index = np.where(self.laser['ranges'][:half] == min_dist)[0][0]
-            angle_of_closest_obstacle = self.laser['angles'][:half][index]
+        if virtual_laser:
+            laser_data = self.virtual_laser
         else:
-            min_dist = np.min(self.laser['ranges'][half:])
-            index = np.where(self.laser['ranges'][half:] == min_dist)[0][0]
-            angle_of_closest_obstacle = self.laser['angles'][half:][index]
+            laser_data = self.virtual_laser
+
+        if half is None:
+            half = int(laser_data['ranges'].shape[0] / 2)
+        if right_side:
+            min_dist = np.min(laser_data['ranges'][:half])
+            index = np.where(laser_data['ranges'][:half] == min_dist)[0][0]
+            angle_of_closest_obstacle = laser_data['angles'][:half][index]
+        else:
+            min_dist = np.min(laser_data['ranges'][half:])
+            index = np.where(laser_data['ranges'][half:] == min_dist)[0][0]
+            angle_of_closest_obstacle = laser_data['angles'][half:][index]
         return min_dist, angle_of_closest_obstacle, index
 
     def follow_corridor(self):
@@ -146,8 +189,9 @@ class DuctExplorer:
         vr = 0.25  # linear velocity reference
         epsilon = 0.6
 
-        # half = -1 so it will get all beams
-        delta_m, phi_m, index_r = self.closest_obstacle(right_side=False)
+        self.create_virtual_laser()
+
+        delta_m, phi_m, index_r = self.closest_obstacle(right_side=False, virtual_laser=True)
 
         G = (2 / pi) * atan(kf * (delta_m - epsilon))
         H = - sqrt(1 - G * G)  # + right side to the wall; - left side to the wall

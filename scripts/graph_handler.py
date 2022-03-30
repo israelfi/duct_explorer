@@ -32,8 +32,10 @@ class GraphHandler:
         self.laser = {'ranges': np.array([]), 'angles': np.array([]), 'angle_min': 0.0, 'angle_max': 0.0,
                       'angle_increment': 0.0}
 
-        rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         rospy.Subscriber("/scan", LaserScan, self.callback_laser)
+
+        # pose information
+        rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         # rospy.Subscriber("/odom", Odometry, self.callback_odometry)
 
         self.setup_ready = False
