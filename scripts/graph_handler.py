@@ -220,7 +220,6 @@ class GraphHandler:
         while not self.setup_ready:
             continue
         self.add_first_node()
-        # print(self.robot_pos[0], self.robot_pos[1])
         while not rospy.is_shutdown():
             self.state_machine()
             self.draw_graph()

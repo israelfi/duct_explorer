@@ -55,7 +55,7 @@ class DuctExplorer:
 
         angle = self.laser['angle_min']
         self.laser['angles'] = []
-        for i in range(number_of_beams):
+        for i in range(self.laser['ranges'].shape[0]):
             self.laser['angles'].append(angle)
             angle += self.laser['angle_increment']
         self.laser['angles'] = np.array(self.laser['angles'])
@@ -69,6 +69,7 @@ class DuctExplorer:
         """
         for T in data.transforms:
             # Choose the transform of the EspeleoRobo
+            # Real Espeleo robot uses base_link
             # base_init, base_link, espeleo_robo/base_link
             if T.child_frame_id == "espeleo_robo/base_link":
                 # Get the orientation
@@ -187,7 +188,10 @@ class DuctExplorer:
         d = 0.15  # distance used in feedback linearization
         kf = 1  # convergence gain
         vr = 0.25  # linear velocity reference
+        # simulation
         epsilon = 0.6
+        # CORO corridor
+        # epsilon = 1.25
 
         self.create_virtual_laser()
 
@@ -202,7 +206,7 @@ class DuctExplorer:
         return v, omega
 
     def main_service(self):
-        while not self.started_pose and not self.started_laser:
+        while not self.started_pose or not self.started_laser:
             continue
         while not rospy.is_shutdown():
             # v, w = self.follow_corridor()
