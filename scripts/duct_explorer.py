@@ -18,7 +18,11 @@ class DuctExplorer:
         # Data used by this node
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
-        self.laser = {'ranges': np.array([]), 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
+        self.laser = {'ranges': np.array([]),
+                      'angles': np.array([]),
+                      'angle_min': 0.0,
+                      'angle_max': 0.0,
+                      'angle_increment': 0.0}
         self.virtual_laser = {'ranges': [], 'angles': [], 'angle_min': 0.0, 'angle_max': 0.0, 'angle_increment': 0.0}
 
         # Topics that this node interacts with
@@ -54,11 +58,10 @@ class DuctExplorer:
         number_of_beams = int((self.laser['angle_max'] - self.laser['angle_min']) / self.laser['angle_increment'])
 
         angle = self.laser['angle_min']
-        self.laser['angles'] = []
+        self.laser['angles'] = np.zeros(self.laser['ranges'].shape[0])
         for i in range(self.laser['ranges'].shape[0]):
-            self.laser['angles'].append(angle)
+            self.laser['angles'][i] = angle
             angle += self.laser['angle_increment']
-        self.laser['angles'] = np.array(self.laser['angles'])
         self.started_laser = True
 
     def callback_pose(self, data):
