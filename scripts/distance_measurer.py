@@ -70,11 +70,12 @@ class DistanceMeasurer:
     def odometry_calculations(self):
         v_r, v_l = self.espeleo.left_right_velocity(self.motor_velocity)
         v_espeleo = self.espeleo.wheel_radius * (abs(v_r) + abs(v_l))/2
+        # v_espeleo = self.espeleo.wheel_radius * (v_r + v_l) / 2
 
         # Calculating distance variation
         dt = self.current_time - self.last_time
         self.last_time = self.current_time
-        dist_dt = v_espeleo * dt if v_espeleo * dt > 0.005 else 0
+        dist_dt = v_espeleo * dt  # if v_espeleo * dt > 0.005 else 0
 
         # Integrations
         self.distance += dist_dt
