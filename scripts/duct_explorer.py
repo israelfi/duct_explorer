@@ -62,6 +62,7 @@ class DuctExplorer:
         for i in range(self.laser['ranges'].shape[0]):
             self.laser['angles'][i] = angle
             angle += self.laser['angle_increment']
+        self.create_virtual_laser()
         self.started_laser = True
 
     def callback_pose(self, data):
@@ -139,7 +140,7 @@ class DuctExplorer:
         if virtual_laser:
             laser_data = self.virtual_laser
         else:
-            laser_data = self.virtual_laser
+            laser_data = self.laser
 
         if half is None:
             half = int(laser_data['ranges'].shape[0] / 2)
@@ -195,8 +196,6 @@ class DuctExplorer:
         epsilon = 0.6
         # CORO corridor
         # epsilon = 1.25
-
-        self.create_virtual_laser()
 
         delta_m, phi_m, index_r = self.closest_obstacle(right_side=False, virtual_laser=True)
 
