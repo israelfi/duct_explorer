@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import numpy as np
+from typing import Tuple
 from datetime import datetime
 from math import sqrt, cos, sin, atan, pi, atan2
 
@@ -191,7 +192,8 @@ class DuctExplorer:
 
         self.virtual_laser = virtual_laser
 
-    def closest_obstacle(self, right_side: bool = True, half: int = None, virtual_laser: bool = False) -> tuple:
+    def closest_obstacle(self, right_side: bool = True, half: int = None,
+                         virtual_laser: bool = False) -> Tuple[float, float, int]:
         """
         Returns the closest obstacle to the robot using a laser sensor.
         Args:
@@ -222,7 +224,7 @@ class DuctExplorer:
             angle_of_closest_obstacle = laser_data['angles'][half:][index]
         return min_dist, angle_of_closest_obstacle, index
 
-    def follow_corridor(self) -> tuple:
+    def follow_corridor(self) -> Tuple[float, float]:
         """
         Control method to follow a corridor in the center of it
         Returns: a tuple with linear and angular velocities in the robot frame
