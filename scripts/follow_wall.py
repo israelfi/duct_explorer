@@ -9,7 +9,6 @@ from tf.transformations import euler_from_quaternion
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 from tf2_msgs.msg import TFMessage
-from std_msgs.msg import String
 
 
 class DuctExplorer:
@@ -21,8 +20,6 @@ class DuctExplorer:
         # Data used by this node
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)
-
-        self.laser_half = 120
         self.laser = {'ranges': np.array([]),
                       'angles': np.array([]),
                       'angle_min': 0.0,
@@ -42,14 +39,9 @@ class DuctExplorer:
         self.vel.angular.y = 0
         self.vel.angular.z = 0
 
-        self.state = 'none'
-        self.previous_state = self.state
-
-        self.reverse_mode = False
-
+        self.half = 120
         self.started_pose = False
         self.started_laser = False
-        self.started_state = False
 
         self.__init_node()
 
@@ -99,7 +91,6 @@ class DuctExplorer:
         self.pub_cmd_vel = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         rospy.Subscriber("/scan", LaserScan, self.callback_laser)
-        rospy.Subscriber("/state", String, self.callback_state)
 
     @staticmethod
     def message_log(msg: str, end='\n') -> None:
@@ -114,10 +105,6 @@ class DuctExplorer:
         now = datetime.now()
         dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
         print(f"[{dt_string}] {msg}", end=end)
-
-    def callback_state(self, state):
-        self.state = state.data
-        self.started_state = True
 
     def callback_laser(self, data: LaserScan) -> None:
         """
@@ -163,12 +150,6 @@ class DuctExplorer:
                 self.robot_pos[1] = T.transform.translation.y
                 self.robot_pos[2] = T.transform.translation.z
         self.started_pose = True
-
-    def dead_end_detected(self):
-        dead_end = (self.previous_state != self.state
-                    and 'StandardControl' in self.previous_state
-                    and 'StandardControl' in self.state)
-        return dead_end
 
     def create_virtual_laser(self, dist: float = 0.2) -> None:
         """
@@ -243,6 +224,32 @@ class DuctExplorer:
             angle_of_closest_obstacle = laser_data['angles'][half:][index]
         return min_dist, angle_of_closest_obstacle, index
 
+    def follow_corridor(self) -> Tuple[float, float]:
+        """
+        Control method to follow a corridor in the center of it
+        Returns: a tuple with linear and angular velocities in the robot frame
+        """
+        dist_r, phi_r, index_r = self.closest_obstacle(right_side=True, half=self.half)
+        dist_l, phi_l, index_l = self.closest_obstacle(right_side=False, half=self.half)
+
+        alpha = (phi_l - phi_r - pi) / 2.0
+
+        phi_D = phi_r + alpha
+        phi_T = phi_r + alpha + pi / 2.0
+
+        D = (dist_l - dist_r) / (2 * cos(alpha))
+
+        G = -(2 / pi) * atan(self.kf * D)
+        H = sqrt(1 - G * G)
+
+        vx = G * cos(phi_D) + H * cos(phi_T)  # (body)
+        vy = G * sin(phi_D) + H * sin(phi_T)  # (body)
+
+        v = self.vr * vx
+        omega = self.vr * (vy / (self.d * 0.5))  # Angular rotation
+
+        return v, omega
+
     def follow_wall(self) -> tuple:
         """
         Implementation of a vector field based control that makes the robot follow a tangent path alongside a wall
@@ -250,17 +257,15 @@ class DuctExplorer:
         Returns: atuple with linear and angular velocities in the robot frame
         """
 
-        delta_m, phi_m, index_r = self.closest_obstacle(right_side=self.reverse_mode, virtual_laser=False)
+        delta_m, phi_m, index_r = self.closest_obstacle(right_side=False, virtual_laser=True)
 
         self.message_log(f'Closest obstacle distance (m): {round(delta_m, 2)} | '
                          f'Angle (deg): {round(np.rad2deg(phi_m), 2)}')
 
-        signal = -1 * self.reverse_mode + 1 * (not self.reverse_mode)
+        G = (2 / pi) * atan(self.kf * (delta_m - self.epsilon))
+        H = - sqrt(1 - G * G)  # + right side to the wall; - left side to the wall
 
-        G = (2 / pi) * atan(self.kf * (delta_m - self.epsilon)) * signal
-        H = - sqrt(1 - G * G) * signal  # + right side to the wall; - left side to the wall
-
-        v = self.vr * (cos(phi_m) * G - sin(phi_m) * H) * signal
+        v = self.vr * (cos(phi_m) * G - sin(phi_m) * H)
         omega = self.vr * (sin(phi_m) * G / self.d + cos(phi_m) * H / self.d)
 
         return v, omega
@@ -284,15 +289,10 @@ class DuctExplorer:
 
         Returns: None
         """
-        self.message_log(f'{self.reverse_mode} Linear speed: {round(linear, 3)} | Angular Speed: {round(angular, 3)}')
+        self.message_log(f'Linear speed: {round(linear, 3)} | Angular Speed: {round(angular, 3)}')
         self.vel.linear.x = linear
         self.vel.angular.z = angular
         self.pub_cmd_vel.publish(self.vel)
-
-    def check_robot_direction(self):
-        dead_end = self.dead_end_detected()
-        self.reverse_mode = (not self.reverse_mode) * dead_end + self.reverse_mode * (not dead_end)
-        self.previous_state = self.state
 
     def main_service(self) -> None:
         """
@@ -302,7 +302,7 @@ class DuctExplorer:
         """
         self.wait_for_subscribed_topics()
         while not rospy.is_shutdown():
-            self.check_robot_direction()
+            # v, w = self.follow_corridor()
             v, w = self.follow_wall()
             self.publish_speeds(linear=v, angular=w)
             self.rate.sleep()

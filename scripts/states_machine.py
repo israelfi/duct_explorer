@@ -21,7 +21,7 @@ MIN_DIST = 2.5
 # Distância para deteccção de saída (a missão termina se a distância medida for maior que MAX_DETECT_DIST)
 MAX_DETECT_DIST = float('inf')
 # Distância usada como referência para identificar dead end. Quanto menor, mais perto chega
-RET_DIST = 0.8
+RET_DIST = 0.9
 
 
 def callback_laser(laser):
@@ -96,7 +96,6 @@ def bif_detect_180(reverse=False):
 def deadend_detected(laser_data):
     """Recebe o vetor de ranges para cada ângulo obtidos do laser planar para detecção de ponto de retorno"""
     data_avg = round(sum(laser_data[:]) / len(laser_data[:]), 2)
-    print(data_avg)
     if data_avg < RET_DIST:
         return True
     else:
@@ -108,7 +107,6 @@ def exit_detect(laser_data):
     data_avg = round(sum(laser_data[100:170]) / len(laser_data[100:170]), 2)
 
     if data_avg > MAX_DETECT_DIST:
-        print(data_avg, MAX_DETECT_DIST)
         return True
     else:
         return False
