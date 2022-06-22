@@ -23,6 +23,8 @@ class TopologicalMapping:
         self.G = nx.Graph()
         self.node_count = 0
         self.previous_node = None
+        self.last_node_is_dead_end = False
+        self.last_visited_node = None
 
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
@@ -96,17 +98,37 @@ class TopologicalMapping:
 
     def add_node_to_graph(self, node_type):
         original_state = self.state
-        self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type=node_type)
+
+        neighbour_node = self.find_neighbour_of_new_node()
+
+        if self.last_node_is_dead_end:
+            self.last_visited_node = list(self.G.edges(self.node_count))[0][1]
+            while self.state == original_state:
+                self.draw_graph()
+            return
+        else:
+            self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type=node_type)
+            self.message_log(f'New node postion: {self.robot_pos}')
+            self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
+            self.last_visited_node = self.node_count + 1
+
         if self.previous_node is not None:
             self.G.add_edge(self.previous_node, self.node_count + 1)
             self.previous_node = None
         else:
-            self.G.add_edge(self.node_count, self.node_count + 1)
+            self.G.add_edge(neighbour_node, self.node_count + 1)
+
         self.node_count += 1
-        self.message_log(f'New node postion: {self.robot_pos}')
-        self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
+
         while self.state == original_state:
             self.draw_graph()
+
+    def find_neighbour_of_new_node(self):
+        if self.last_visited_node is None:
+            neighbour_node = self.node_count
+        else:
+            neighbour_node = self.last_visited_node
+        return neighbour_node
 
     @staticmethod
     def _can_not_remove_nodes(node_one_type, node_two_type):
@@ -160,27 +182,31 @@ class TopologicalMapping:
 
         pos = nx.get_node_attributes(self.G, 'pos')
         nx.draw(self.G, pos, node_color=color_map)
-        a = [node for node in self.G]
         plt.pause(0.1)
 
-    def read_state_data(self):
+    def read_state_data_and_add_node_to_graph(self):
         if 'Bifurcation' in self.state:
             self.message_log('Bifurcation')
             self.add_node_to_graph(node_type='bifurcation')
+            self.last_node_is_dead_end = False
         elif self.dead_end_detected():
             self.message_log('Dead end')
             self.add_node_to_graph(node_type='dead end')
+            self.last_node_is_dead_end = True
         self.previous_state = self.state
 
-    def main_service(self):
+    def __wait_for_subscribed_topics(self):
         self.message_log(f'Waiting for subscribed topics...')
         while not self.started_pose or not self.started_state:
             continue
         self.message_log(f'Subscribed topics ready')
 
+    def main_service(self):
+        self.__wait_for_subscribed_topics()
+
         self.add_first_node()
         while not rospy.is_shutdown():
-            self.read_state_data()
+            self.read_state_data_and_add_node_to_graph()
             self.draw_graph()
             self.check_repeated_nodes()
             self.rate.sleep()
