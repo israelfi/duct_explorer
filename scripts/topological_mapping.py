@@ -99,27 +99,34 @@ class TopologicalMapping:
     def add_node_to_graph(self, node_type):
         original_state = self.state
 
-        neighbour_node = self.find_neighbour_of_new_node()
-
         if self.last_node_is_dead_end:
             self.last_visited_node = list(self.G.edges(self.node_count))[0][1]
-            while self.state == original_state:
-                self.draw_graph()
+            self.wait_for_new_state(original_state)
             return
-        else:
-            self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type=node_type)
-            self.message_log(f'New node postion: {self.robot_pos}')
-            self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
-            self.last_visited_node = self.node_count + 1
 
+        self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type=node_type)
+        neighbour_node = self.find_neighbour_of_new_node()
+        self.add_edge_to_new_node(neighbour_node)
+
+        self.__update_graph_information()
+
+        self.message_log(f'New node postion: {self.robot_pos}')
+        self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
+
+        self.wait_for_new_state(original_state)
+
+    def __update_graph_information(self):
+        self.last_visited_node = self.node_count + 1
+        self.node_count += 1
+
+    def add_edge_to_new_node(self, neighbour_node):
         if self.previous_node is not None:
             self.G.add_edge(self.previous_node, self.node_count + 1)
             self.previous_node = None
         else:
             self.G.add_edge(neighbour_node, self.node_count + 1)
 
-        self.node_count += 1
-
+    def wait_for_new_state(self, original_state):
         while self.state == original_state:
             self.draw_graph()
 
