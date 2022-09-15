@@ -304,6 +304,8 @@ class DuctExplorer:
         while not rospy.is_shutdown():
             self.check_robot_direction()
             v, w = self.follow_wall()
+            if self.state == 'Exit':
+                v, w = 0, 0
             self.publish_speeds(linear=v, angular=w)
             self.rate.sleep()
 
