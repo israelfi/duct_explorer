@@ -104,16 +104,18 @@ class TopologicalMapping:
             self.wait_for_new_state(original_state)
             return
 
-        self.G.add_node(self.node_count + 1, pos=(self.robot_pos[0], self.robot_pos[1]), type=node_type)
+        is_dead_end = node_type == 'dead end'
+        x_pos, y_pos = self.wait_for_new_state(original_state, dead_end=is_dead_end)
+        self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type)
         neighbour_node = self.find_neighbour_of_new_node()
         self.add_edge_to_new_node(neighbour_node)
 
         self.__update_graph_information()
 
-        self.message_log(f'New node postion: {self.robot_pos}')
+        self.message_log(f'New node postion: {(x_pos, y_pos)}')
         self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
 
-        self.wait_for_new_state(original_state)
+        self.draw_graph()
 
     def __update_graph_information(self):
         self.last_visited_node = self.node_count + 1
@@ -126,9 +128,19 @@ class TopologicalMapping:
         else:
             self.G.add_edge(neighbour_node, self.node_count + 1)
 
-    def wait_for_new_state(self, original_state):
+    def wait_for_new_state(self, original_state, dead_end=False):
+        x_pos = [self.robot_pos[0]]
+        y_pos = [self.robot_pos[1]]
+        if dead_end:
+            return np.round((x_pos[0], y_pos[0]), 2)
+
         while self.state == original_state:
+            x_pos.append(self.robot_pos[0])
+            y_pos.append(self.robot_pos[1])
             self.draw_graph()
+
+        node_position = np.round((np.mean(x_pos), np.mean(y_pos)), 2)
+        return node_position
 
     def find_neighbour_of_new_node(self):
         if self.last_visited_node is None:
