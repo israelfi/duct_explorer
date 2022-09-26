@@ -17,9 +17,12 @@ from std_msgs.msg import String
 
 class TopologicalMapping:
     __MIN_DIST = 2.5
+    __DIST_TOL = 0.5
 
-    def __init__(self, name):
+    def __init__(self, name, right_angles=False):
         self.node_name = name
+        self.right_angles = right_angles
+
         self.G = nx.Graph()
         self.node_count = 0
         self.previous_node = None
@@ -117,6 +120,25 @@ class TopologicalMapping:
 
         self.draw_graph()
 
+    def update_node_positions(self):
+        """
+        If nodes are close in the x or y axises, makes them have the same position
+        """
+        nodes = list(self.G.nodes)
+        for i in range(self.G.number_of_nodes()):
+            current_node = nodes[i]
+            x_cur, y_cur = self.G.nodes[current_node]['pos']
+            x_cur = [x_cur]
+            y_cur = [y_cur]
+            for j in range(self.G.number_of_nodes()):
+                next_node = nodes[j]
+                x_next_node, y_next_node = self.G.nodes[next_node]['pos']
+                if abs(x_next_node - x_cur[0]) < self.__DIST_TOL:
+                    x_cur.append(x_next_node)
+                if abs(y_next_node - y_cur[0]) < self.__DIST_TOL:
+                    y_cur.append(y_next_node)
+            self.G.nodes[current_node]['pos'] = (np.mean(x_cur), np.mean(y_cur))
+
     def __update_graph_information(self):
         self.last_visited_node = self.node_count + 1
         self.node_count += 1
@@ -205,11 +227,11 @@ class TopologicalMapping:
 
     def read_state_data_and_add_node_to_graph(self):
         if 'Bifurcation' in self.state:
-            self.message_log('Bifurcation')
+            self.message_log('Detected Bifurcation')
             self.add_node_to_graph(node_type='bifurcation')
             self.last_node_is_dead_end = False
         elif self.dead_end_detected():
-            self.message_log('Dead end')
+            self.message_log('Detected Dead end')
             self.add_node_to_graph(node_type='dead end')
             self.last_node_is_dead_end = True
         self.previous_state = self.state
@@ -228,13 +250,15 @@ class TopologicalMapping:
             self.read_state_data_and_add_node_to_graph()
             self.draw_graph()
             self.check_repeated_nodes()
+            if self.right_angles:
+                self.update_node_positions()
             self.rate.sleep()
 
 
 if __name__ == '__main__':
     node_name = "toplogical_mapping"
     print(node_name)
-    service = TopologicalMapping(name=node_name)
+    service = TopologicalMapping(name=node_name, right_angles=False)
     service.main_service()
 
     print(f"{node_name} node stopped")
