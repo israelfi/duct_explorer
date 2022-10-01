@@ -14,7 +14,7 @@ from std_msgs.msg import String
 
 class DuctExplorer:
     def __init__(self):
-        self.message_log('Starting duct_explorer node...')
+        self.message_log('Starting gallery_explorer node...')
 
         self.__set_parameters()
 
@@ -91,7 +91,7 @@ class DuctExplorer:
         Returns:
 
         """
-        rospy.init_node('duct_explorer', anonymous=True)
+        rospy.init_node('gallery', anonymous=True)
         self.freq = 10
         self.rate = rospy.Rate(self.freq)
 

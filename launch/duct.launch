@@ -12,5 +12,5 @@
     <!--Bifurcation identification-->
     <node pkg="duct_explorer_ros" name="states_machine" type="states_machine.py" args="" output="screen"> </node>
     <!--Node that navigates the robot through the duct-->
-    <node pkg="duct_explorer_ros" name="duct_explorer" type="duct_explorer.py" args="" output="screen"> </node>
+    <node pkg="duct_explorer_ros" name="duct_explorer" type="gallery_explorer.py" args="" output="screen"> </node>
 </launch>
