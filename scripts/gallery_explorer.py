@@ -271,7 +271,7 @@ class DuctExplorer:
         Returns: None
         """
         self.message_log('Waiting for messages in subscribed topics...')
-        while not self.started_pose or not self.started_laser:
+        while not self.started_laser:
             continue
         self.message_log('Topics ready!')
 
