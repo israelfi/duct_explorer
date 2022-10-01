@@ -97,6 +97,6 @@ before in order to set up the simulation parameters.
 
 Enter the following command in the terminal:
 
-```roslaunch duct_explorer galley.launch```
+```roslaunch duct_explorer gallery.launch```
 
 
