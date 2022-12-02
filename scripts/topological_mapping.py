@@ -7,17 +7,20 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 from math import hypot
+from scipy import signal
 from datetime import datetime
 
 from tf.transformations import euler_from_quaternion
 from tf2_msgs.msg import TFMessage
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
 
 class TopologicalMapping:
     __MIN_DIST = 2.5
     __DIST_TOL = 0.5
+    __MIN_DIST_FOR_LOCAL_MINIMA = 0.75
 
     def __init__(self, name, right_angles=False):
         self.node_name = name
@@ -29,14 +32,21 @@ class TopologicalMapping:
         self.last_node_is_dead_end = False
         self.last_visited_node = None
 
+        self.started_pose = False
+        self.started_state = False
+        self.started_laser = False
+
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
 
-        self.started_pose = False
-        self.started_state = False
-
         self.state = 'none'
         self.previous_state = self.state
+
+        self.laser = {'ranges': np.array([]),
+                      'angles': np.array([]),
+                      'angle_min': 0.0,
+                      'angle_max': 0.0,
+                      'angle_increment': 0.0}
 
         self.fig = plt.figure(figsize=(8, 5))
         self.fig.canvas.mpl_connect('key_release_event', self.close_graph)
@@ -51,6 +61,7 @@ class TopologicalMapping:
 
         rospy.Subscriber("/tf", TFMessage, self.callback_pose)
         rospy.Subscriber("/state", String, self.callback_state)
+        rospy.Subscriber("/scan", LaserScan, self.callback_laser)
 
     def close_graph(self, event):
         if event.key == 'escape':
@@ -96,8 +107,72 @@ class TopologicalMapping:
 
         self.started_pose = True
 
+    def callback_laser(self, data):
+        """
+        Callback routine to get the data from the laser sensor
+        Args:
+            data: laser data
+        """
+        ranges = np.array(data.ranges)
+
+        self.laser['angle_min'] = data.angle_min
+        self.laser['angle_max'] = data.angle_max
+        self.laser['angle_increment'] = data.angle_increment
+
+        angles = np.linspace(start=self.laser['angle_min'],
+                             stop=self.laser['angle_max'],
+                             num=ranges.shape[0])
+
+        # Removing beams with 'inf' measurements
+        is_not_inf = ranges != np.inf
+        self.laser['ranges'] = ranges[is_not_inf]
+        self.laser['angles'] = angles[is_not_inf]
+
+        self.started_laser = True
+
     def add_first_node(self):
         self.G.add_node(self.node_count, pos=(self.robot_pos[0], self.robot_pos[1]), type='start')
+
+    def estimate_bifurcation_position(self, local_minima_x, local_minima_y):
+        x_robot = self.robot_pos[0]
+        y_robot = self.robot_pos[1]
+        if self.state is None or 'Bifurcation' not in self.state:
+            return [None, None]
+
+        points_in_range = []
+        range_to_check = 3
+        for i in range(len(local_minima_x)):
+            distance_from_robot = np.sqrt(local_minima_x[i] ** 2 + local_minima_y[i] ** 2)
+            if distance_from_robot < range_to_check:
+                points_in_range.append([local_minima_x[i] + x_robot, local_minima_y[i] + y_robot])
+
+        if len(points_in_range) < 2:
+            return [None, None]
+
+        # bifurcation_in_robot_frame = np.mean(points_in_range, axis=0)
+        # bifurcation_in_world_frame = bifurcation_in_robot_frame + self.robot_pos[:1]
+        return np.mean(points_in_range, axis=0)
+
+    def get_bifurcation_position(self):
+        ranges = self.laser['ranges']
+        angles = self.laser['angles']
+
+        # The variable 'adjacent_beam_to_check' indicates how many beams in the neighourhood should be checked
+        # to check if a beam is or is not a local minima
+        adjacent_beam_to_check = 8
+        m = int(adjacent_beam_to_check / 2)
+
+        # Calculating local minimums using for scipy
+        local_minima_indexes = signal.argrelextrema(ranges, np.less, order=m)
+        diff_ranges = ranges[local_minima_indexes]
+        diff_angles = angles[local_minima_indexes]
+
+        x_diff = diff_ranges * np.cos(diff_angles)
+        y_diff = diff_ranges * np.sin(diff_angles)
+
+        estimated_bifurcation = self.estimate_bifurcation_position(local_minima_x=x_diff,
+                                                                   local_minima_y=y_diff)
+        return estimated_bifurcation
 
     def add_node_to_graph(self, node_type):
         original_state = self.state
@@ -151,14 +226,19 @@ class TopologicalMapping:
             self.G.add_edge(neighbour_node, self.node_count + 1)
 
     def wait_for_new_state(self, original_state, dead_end=False):
-        x_pos = [self.robot_pos[0]]
-        y_pos = [self.robot_pos[1]]
+        x_pos = []
+        y_pos = []
         if dead_end:
+            x_pos = [self.robot_pos[0]]
+            y_pos = [self.robot_pos[1]]
             return np.round((x_pos[0], y_pos[0]), 2)
 
         while self.state == original_state:
-            x_pos.append(self.robot_pos[0])
-            y_pos.append(self.robot_pos[1])
+            x_bifurcation, y_bifurcation = self.get_bifurcation_position()
+            if x_bifurcation is None:
+                continue
+            x_pos.append(x_bifurcation)
+            y_pos.append(y_bifurcation)
             self.draw_graph()
 
         node_position = np.round((np.mean(x_pos), np.mean(y_pos)), 2)
@@ -193,6 +273,9 @@ class TopologicalMapping:
                     # Nodes connected to the repeated node j
                     nodes_connected = [x[1] for x in self.G.edges(j)]
                     self.previous_node = i
+                    # Considering the new node position as a mean of the positions of the repeated nodes
+                    self.G.nodes[i]['pos'] = (np.mean([node_positions[i][0], node_positions[j][0]]),
+                                              np.mean([node_positions[i][1], node_positions[j][1]]))
                     self.G.remove_node(j)
                     self.node_count -= 1
                     self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
@@ -258,6 +341,7 @@ class TopologicalMapping:
 if __name__ == '__main__':
     node_name = "toplogical_mapping"
     print(node_name)
+    # right_angles indicates if the intersections are in a 90-degree angle
     service = TopologicalMapping(name=node_name, right_angles=False)
     service.main_service()
 
