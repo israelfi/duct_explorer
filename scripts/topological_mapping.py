@@ -7,7 +7,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 import cv2
-from math import hypot, atan2, sqrt
+from math import hypot, atan, atan2, sqrt
 from scipy import signal
 from datetime import datetime
 
@@ -274,7 +274,7 @@ class TopologicalMapping:
         angles = self.laser['angles']
 
         robot_angle = self.robot_angles_imu[-1]
-        robot_angle = robot_angle if robot_angle > 0 else np.pi - abs(robot_angle)
+        # robot_angle = robot_angle if robot_angle > 0 else np.pi - abs(robot_angle)
 
         x = ranges * np.cos(angles)
         y = ranges * np.sin(angles)
@@ -292,33 +292,67 @@ class TopologicalMapping:
         lines = cv2.HoughLinesP(image=image, rho=1, theta=np.pi / 180, threshold=10, lines=np.array([]),
                                 minLineLength=minLineLength, maxLineGap=5)
 
-        line_angles = []
+        corridors = []
+        line_dict = {}  # {line end points: line angle}
         if lines is not None:
             lines_reshape = np.reshape(lines, newshape=(lines.shape[0], 4))
             line_angles = []
             for line in lines_reshape:
                 # calculate angle
-                angle = atan2(line[3] - line[1], line[2] - line[0])
-                # TODO: map angles from 0 to 180
-                angle = angle if angle > 0 else np.pi - abs(angle)
-                angle += robot_angle
+                angle = atan((line[3] - line[1]) / (line[2] - line[0]))
+                angle -= robot_angle
+                if angle > np.pi:
+                    angle -= 2 * np.pi
+                elif angle < -np.pi:
+                    angle += 2 * np.pi
 
-                angle = angle if angle <= np.pi else angle - np.pi
                 line_angles.append(angle)
+                line_dict[str(line)] = angle
 
-            # new_angles = self.remove_repeated_angles(line_angles)
+            # Consider a corridor only parallel angles that are apart a defined dist
+            corridors = self.find_corridor_angle_given_lines(line_dict, lines_reshape, resolution)
 
-        return line_angles
+        return corridors
 
-    def remove_repeated_angles(self, line_angles):
+    @staticmethod
+    def remap_angles(start_angle, end_angle):
+        pass
+
+    def find_corridor_angle_given_lines(self, line_dict, lines_reshape, resolution):
+        corridors = []
+        already_assigned_angles = []
+        min_corridor_width = 1
+        max_corridor_width = 2
+        for l1 in range(lines_reshape.shape[0]):
+            for l2 in range(l1 + 1, lines_reshape.shape[0]):
+                line_1_angle = line_dict[str(lines_reshape[l1])]
+                line_2_angle = line_dict[str(lines_reshape[l2])]
+
+                l1_start = lines_reshape[l1][:2]
+                l1_end = lines_reshape[l1][2:]
+                l2_start = lines_reshape[l2][:2]
+                l2_end = lines_reshape[l2][2:]
+                dist_between_lines = self.distance_between_segments(l1_start, l1_end, l2_start, l2_end)
+                has_corridor_dist = max_corridor_width / resolution > dist_between_lines > min_corridor_width / resolution
+                if abs(line_1_angle - line_2_angle) > np.deg2rad(10) or not has_corridor_dist:
+                    continue
+                if line_1_angle in already_assigned_angles or line_2_angle in already_assigned_angles:
+                    continue
+                corridors.append(line_1_angle)
+                already_assigned_angles.append(line_2_angle)
+                break  # A line can only be part of one corridor
+        return corridors
+
+    @staticmethod
+    def remove_repeated_angles(line_angles):
         diff = 15
-        print(f'{line_angles = }')
         new_angles = line_angles[:]
         for a1 in range(len(line_angles)):
             for a2 in range(a1 + 1, len(line_angles)):
-                if line_angles[a2] in new_angles and (abs(line_angles[a1] - line_angles[a2]) <= np.deg2rad(diff) or abs(line_angles[a1] - line_angles[a2]) >= np.deg2rad(180 - diff)):
+                if line_angles[a2] in new_angles and (abs(line_angles[a1] - line_angles[a2]) <= np.deg2rad(diff)
+                                                      or 2 * np.pi - abs(line_angles[a1] - line_angles[a2]) <= np.deg2rad(diff)):
                     new_angles.remove(line_angles[a2])
-        print(*np.round(np.rad2deg(new_angles)))
+        print('new_angles =', *np.round(np.rad2deg(new_angles)))
         return new_angles
 
     @staticmethod
@@ -417,8 +451,8 @@ class TopologicalMapping:
             angles = self.remove_repeated_angles(angles)
             # print('done getting lines')
             # =========
-            # TODO: para checar se os ângulos de corredores são válidos: ver quantas vezes o ângulo foi medido. se for menor
-            # do que um limite (i.e. 70%) não considerar.
+            # Para checar se os ângulos de corredores são válidos: ver quantas vezes o ângulo foi medido. Se for menor
+            # que um limite (por exemplo, 70%), não considerar.
             if not angles_dict:
                 angles_dict = {angle: 1 for angle in angles}
             else:
@@ -432,9 +466,7 @@ class TopologicalMapping:
 
             x_pos.append(x_bifurcation)
             y_pos.append(y_bifurcation)
-            # print('drawing graph')
             self.draw_graph()
-            # print('done drawing graph')
 
         print(f'Number of measurements in bifurcation: {angles_dict["count"]}')
 
@@ -442,12 +474,8 @@ class TopologicalMapping:
         for angle_key in angles_dict.keys():
             if angle_key == 'count':
                 continue
-            if angles_dict[angle_key] / angles_dict['count'] > 0.7:
+            if angles_dict[angle_key] / angles_dict['count'] > 0.5:
                 filtered_angles.append(angle_key)
-
-        print('removing repeated angles')
-        # new_angles = self.remove_repeated_angles(angles)
-        print('done removing repeated angles')
 
         node_position = np.round((np.mean(x_pos), np.mean(y_pos)), 2)
         return node_position[0], node_position[1], filtered_angles
