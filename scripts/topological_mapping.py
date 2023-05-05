@@ -14,9 +14,10 @@ from datetime import datetime
 from tf.transformations import euler_from_quaternion
 from tf2_msgs.msg import TFMessage
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan, Imu
+from sensor_msgs.msg import LaserScan, Imu, JointState
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from utils.bib_espeleo_differential import EspeleoDifferential
 
 
 class TopologicalMapping:
@@ -38,8 +39,26 @@ class TopologicalMapping:
         self.started_state = False
         self.started_laser = False
 
+        # Times used to integrate velocity to pose
+        self.current_time = 0.0
+        self.last_time = 0.0
+
+        self.distance_from_last_node = 0.0
+
+        self.espeleo = EspeleoDifferential()
+
+        # Motor velocities
+        self.motor_velocity = np.zeros(6)
+
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)  # Euler angles
+
+        # First node has type 'init' (id = 3)
+        self.adjacency_matrix = np.ones((1, 1)) * 3
+        # First node has a distance of 0 from itself
+        self.distance_matrix = np.zeros((1, 1))
+        # It is considered that the init node does not have any neighbours
+        self.neighbour_count_list = np.array([0])
 
         self.state = 'none'
         self.previous_state = self.state
@@ -74,6 +93,13 @@ class TopologicalMapping:
         rospy.Subscriber("/scan", LaserScan, self.callback_laser)
         rospy.Subscriber("/imu_data", Imu, self.callback_imu)
 
+        rospy.Subscriber("/device1/get_joint_state", JointState, self.motor1_callback)
+        rospy.Subscriber("/device2/get_joint_state", JointState, self.motor2_callback)
+        rospy.Subscriber("/device3/get_joint_state", JointState, self.motor3_callback)
+        rospy.Subscriber("/device4/get_joint_state", JointState, self.motor4_callback)
+        rospy.Subscriber("/device5/get_joint_state", JointState, self.motor5_callback)
+        rospy.Subscriber("/device6/get_joint_state", JointState, self.motor6_callback)
+
     def close_graph(self, event):
         if event.key == 'escape':
             self.message_log('Closing topological mapping node')
@@ -90,6 +116,30 @@ class TopologicalMapping:
         now = datetime.now()
         dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
         print(f"[{dt_string}] {msg}")
+
+    def motor1_callback(self, message):
+        self.motor_velocity[0] = message.velocity[0]
+
+    def motor2_callback(self, message):
+        self.motor_velocity[1] = message.velocity[0]
+
+    def motor3_callback(self, message):
+        self.motor_velocity[2] = message.velocity[0]
+
+    def motor4_callback(self, message):
+        self.motor_velocity[3] = message.velocity[0]
+
+    def motor5_callback(self, message):
+        self.motor_velocity[4] = message.velocity[0]
+
+    def motor6_callback(self, message):
+        self.motor_velocity[5] = message.velocity[0]
+        self.current_time = message.header.stamp.secs + message.header.stamp.nsecs * 0.000000001
+
+        if self.last_time > 0.0:
+            self.odometry_calculations()
+        else:
+            self.last_time = self.current_time
 
     def callback_imu(self, data):
         quat = np.zeros(4)
@@ -187,6 +237,18 @@ class TopologicalMapping:
 
         self.started_laser = True
 
+    def odometry_calculations(self):
+        v_r, v_l = self.espeleo.left_right_velocity(self.motor_velocity)
+
+        dt = self.current_time - self.last_time
+        self.last_time = self.current_time
+
+        v_espeleo = self.espeleo.wheel_radius * (abs(v_r) + abs(v_l)) / 2
+        # Integrations
+        dist_dt = v_espeleo * dt  # if v_espeleo * dt > 0.005 else 0
+
+        self.distance_from_last_node += dist_dt
+
     def add_first_node(self):
         self.G.add_node(self.node_count, pos=(self.robot_pos[0], self.robot_pos[1]), type='start', angles=[])
 
@@ -245,29 +307,186 @@ class TopologicalMapping:
 
     def add_node_to_graph(self, node_type):
         original_state = self.state
+        dist_from_last_node = np.round(self.distance_from_last_node, 2)
+
+        if dist_from_last_node < 0.5:
+            # Only consider a position as new node only if it is 0.5 m far from the last node
+            self.wait_for_new_state(original_state)
+            return
 
         if self.last_node_is_dead_end:
             self.last_visited_node = list(self.G.edges(self.node_count))[0][1]
             self.wait_for_new_state(original_state)
+            self.distance_from_last_node = 0.
             return
 
         is_dead_end = node_type == 'dead end'
-        # angles = []
-        # if not is_dead_end:
-        #     angles = self.get_corridors_angles()
-        x_pos, y_pos, angles = self.wait_for_new_state(original_state, dead_end=is_dead_end)
-        self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type, angles=np.round(np.rad2deg(angles)).tolist())
+
+        # x_pos, y_pos, angles = self.wait_for_new_state(original_state, dead_end=is_dead_end)
+        # self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type, angles=np.round(np.rad2deg(angles)).tolist())
+
+        x_pos, y_pos, number_of_neighbours = self.wait_for_new_state(original_state, dead_end=is_dead_end)
+        self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type, angles=number_of_neighbours)
+
         neighbour_node = self.find_neighbour_of_new_node()
-        self.add_edge_to_new_node(neighbour_node)
+        node_i = neighbour_node
+
+        if self.previous_node is not None:
+            node_i = self.previous_node
+
+        self.update_matrices(node_i=node_i, node_j=self.node_count + 1,
+                             distance_between_nodes=dist_from_last_node,
+                             neighbour_count=number_of_neighbours)
+
+        self.add_edge_to_new_node(neighbour_node, dist_from_last_node=dist_from_last_node)
 
         self.__update_graph_information()
 
-        self.message_log(f'New node postion: {(x_pos, y_pos)}')
+        self.message_log(f'New node position: {(x_pos, y_pos)}')
         self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
+
+        self.distance_from_last_node = 0.
 
         self.draw_graph()
 
+    def get_node_type_by_id(self, node_id):
+        node_types = nx.get_node_attributes(self.G, 'type')
+        return node_types[node_id]
+
+    @staticmethod
+    def str_type_to_int(str_type):
+        if str_type == 'bifurcation':
+            return 1
+        if str_type == 'dead end':
+            return 2
+        return 3
+
+    def update_matrices(self, node_i, node_j, distance_between_nodes, neighbour_count):
+        """
+        Updates the distance matrix, adjacency matrix and neighbour count list
+        Args:
+            node_i: previous node id
+            node_j: current node id
+            distance_between_nodes: distance between the current and previous nodes
+            neighbour_count: amount of nodes connected to node_j
+        Returns: None
+        """
+        # Initial node is not considered, since it is not a bifurcation nor a dead end
+        if node_i == 0:
+            node_i = node_j
+
+        node_i_type = self.get_node_type_by_id(node_i)
+        node_i_type_int = self.str_type_to_int(node_i_type)
+
+        node_j_type = self.get_node_type_by_id(node_j)
+        node_j_type_int = self.str_type_to_int(node_j_type)
+
+        # Updating ids to match Python indexing (node count starts with 1 and list indexing with 0)
+        node_i_idx = node_i - 1
+        node_j_idx = node_j - 1
+
+        # Distance Matrix
+        if node_j_idx + 1 > self.distance_matrix.shape[0]:
+            self.distance_matrix = np.pad(self.distance_matrix, [(0, 1), (0, 1)], constant_values=-1)
+
+        self.distance_matrix[node_i_idx][node_j_idx] = distance_between_nodes
+        self.distance_matrix[node_j_idx][node_i_idx] = distance_between_nodes
+        self.distance_matrix[node_j_idx][node_j_idx] = 0
+        print('Dist. Matrix:\n', self.distance_matrix, '\n', '=' * 45, sep='')
+
+        # Adjacency Type Matrix
+        if node_j_idx + 1 > self.adjacency_matrix.shape[0]:
+            self.adjacency_matrix = np.pad(self.adjacency_matrix, [(0, 1), (0, 1)], constant_values=0)
+
+        self.adjacency_matrix[node_i_idx][node_j_idx] = node_j_type_int
+        self.adjacency_matrix[node_j_idx][node_i_idx] = node_i_type_int
+        self.adjacency_matrix[node_j_idx][node_j_idx] = node_j_type_int
+        print('Adj. Matrix:\n', self.adjacency_matrix, '\n', '=' * 45, sep='')
+
+        # Neighbour Count List
+        if node_j_type == 'dead end':
+            neighbour_count = 1
+        if node_j_idx + 1 > self.neighbour_count_list.shape[0]:
+            self.neighbour_count_list = np.hstack((self.neighbour_count_list, neighbour_count))
+        else:
+            self.neighbour_count_list[node_j_idx] = neighbour_count
+        print('Neighbour Count List:\n', self.neighbour_count_list, '\n', '=' * 45, sep='')
+
+    def get_bifurcation_angles(self):
+        """
+        Get the opening angles (corridors) when the robot is in a bifurcation.
+        It is used a similar method of "Towards a Simple Navigation Strategy for Autonomous Inspection of Ducts and Galleries".
+        Returns: bifurcation angles
+        """
+        MIN_DIST = 2.5
+        MIN_ANGLE = np.deg2rad(25)
+
+        laser_ranges = self.laser['ranges']
+        laser_angles = self.laser['angles']
+
+        robot_angle = self.robot_angles_imu[-1]
+
+        angles = []
+        for i in range(len(laser_ranges)):
+            # para cada valor presente no vetor de ranges
+            laser_ranges[i] = round(laser_ranges[i], 2)
+            if laser_ranges[i] > MIN_DIST:
+                # caso o valor seja maior que a distância parâmetro mínima, adiciona ângulo no novo vetor
+                angle = laser_angles[i]
+                angles.append(angle)
+
+        openings = []
+        current_opening = []
+        for i in range(len(angles) - 1):
+            if abs(angles[i + 1] - angles[i]) < MIN_ANGLE or 2 * np.pi - abs(angles[i + 1] - angles[i]) < MIN_ANGLE:
+                current_opening.append(angles[i])
+            else:
+                # close current corridor opening
+                openings.append(current_opening)
+                current_opening = []
+        openings.append(current_opening)
+
+        # Getting the average angle for each opening found (each opening is treated as a different corridor)
+        avg_ang = [np.mean(o) for o in openings]
+        new_angles = []
+        angles_list = []
+        for i in range(len(avg_ang)):
+            added_angles = False
+            for j in range(i + 1, len(avg_ang)):
+                already_added = avg_ang[i] in angles_list or avg_ang[j] in angles_list
+                if already_added:
+                    break
+                if 2 * np.pi - abs(avg_ang[i] - avg_ang[j]) < MIN_ANGLE:
+                    # new_angle = 2 * np.pi - avg_ang[i] + avg_ang[j]
+                    new_angle = (2 * np.pi - abs(avg_ang[i] - avg_ang[j])) / 2 + max(avg_ang[i], avg_ang[j])
+                    if new_angle > np.pi:
+                        new_angle -= 2 * np.pi
+                    elif new_angle < -np.pi:
+                        new_angle += 2 * np.pi
+                    added_angles = True
+                    angles_list.extend([avg_ang[i], avg_ang[j]])
+                    new_angles.append(new_angle)
+                    break
+            if not added_angles and not avg_ang[i] in angles_list:
+                new_angles.append(avg_ang[i])
+                # added_angles = False
+
+        # Getting angles in world frame
+        angles_world_frame = []
+        for angle in new_angles:
+            angle += robot_angle
+            if angle > np.pi:
+                angle -= 2 * np.pi
+            elif angle < -np.pi:
+                angle += 2 * np.pi
+            angles_world_frame.append(angle)
+        return angles_world_frame
+
     def get_corridors_angles(self):
+        """
+        Get the opening angles (corridors) when the robot is in a bifurcation using image processing techniques.
+        Returns: bifurcation angles
+        """
         x_size = 15
         y_size = 15
         ranges = self.laser['ranges']
@@ -283,7 +502,7 @@ class TopologicalMapping:
         resolution = 0.1  # meters/pixel
         image_size = (int(x_size / resolution), int(y_size / resolution))  # 15x15 meters
         origin = (image_size[0] // 2, image_size[1] // 2)
-        pts = np.round((point_cloud / resolution + np.array(origin)).astype(int))  # pixel coords for the point cloud points
+        pts = np.round((point_cloud / resolution + np.array(origin)).astype(int))  # pixel cords for the point cloud points
         pts = pts[(pts[:, 0] >= 0) & (pts[:, 0] < image_size[0]) & (pts[:, 1] >= 0) & (pts[:, 1] < image_size[1]), :]
         image = np.zeros(image_size, dtype=np.uint8)
         image[pts[:, 0], pts[:, 1]] = 255
@@ -299,7 +518,11 @@ class TopologicalMapping:
             line_angles = []
             for line in lines_reshape:
                 # calculate angle
-                angle = atan((line[3] - line[1]) / (line[2] - line[0]))
+                num = line[3] - line[1]
+                den = line[2] - line[0]
+                # if den == 0:
+                #     continue
+                angle = atan(num/den)
                 angle -= robot_angle
                 if angle > np.pi:
                     angle -= 2 * np.pi
@@ -352,7 +575,7 @@ class TopologicalMapping:
                 if line_angles[a2] in new_angles and (abs(line_angles[a1] - line_angles[a2]) <= np.deg2rad(diff)
                                                       or 2 * np.pi - abs(line_angles[a1] - line_angles[a2]) <= np.deg2rad(diff)):
                     new_angles.remove(line_angles[a2])
-        print('new_angles =', *np.round(np.rad2deg(new_angles)))
+        # print('new_angles =', *np.round(np.rad2deg(new_angles)))
         return new_angles
 
     @staticmethod
@@ -404,7 +627,7 @@ class TopologicalMapping:
 
     def update_node_positions(self):
         """
-        If nodes are close in the x or y axises, makes them have the same position
+        If nodes are close in the x or y axes, makes them have the same position
         """
         nodes = list(self.G.nodes)
         for i in range(self.G.number_of_nodes()):
@@ -425,12 +648,12 @@ class TopologicalMapping:
         self.last_visited_node = self.node_count + 1
         self.node_count += 1
 
-    def add_edge_to_new_node(self, neighbour_node):
+    def add_edge_to_new_node(self, neighbour_node, dist_from_last_node=0.0):
         if self.previous_node is not None:
-            self.G.add_edge(self.previous_node, self.node_count + 1)
+            self.G.add_edge(self.previous_node, self.node_count + 1, dist_from_last_node=dist_from_last_node)
             self.previous_node = None
         else:
-            self.G.add_edge(neighbour_node, self.node_count + 1)
+            self.G.add_edge(neighbour_node, self.node_count + 1, dist_from_last_node=dist_from_last_node)
 
     def wait_for_new_state(self, original_state, dead_end=False):
         x_pos = []
@@ -438,10 +661,11 @@ class TopologicalMapping:
         if dead_end:
             x_pos = [self.robot_pos[0]]
             y_pos = [self.robot_pos[1]]
-            return np.round(x_pos[0], 2), np.round(y_pos[0], 2), []
+            return np.round(x_pos[0], 2), np.round(y_pos[0], 2), 1
 
         angles = []
         angles_dict = {'count': 1}
+        exit_counts = {}
         while self.state == original_state:
             x_bifurcation, y_bifurcation = self.get_bifurcation_position()
             if x_bifurcation is None:
@@ -449,14 +673,18 @@ class TopologicalMapping:
             # print('getting lines')
             angles.extend(self.get_corridors_angles())
             angles = self.remove_repeated_angles(angles)
-            # print('done getting lines')
-            # =========
+            n_exits = len(self.get_bifurcation_angles())
+            if n_exits not in exit_counts:
+                exit_counts[n_exits] = 1
+            else:
+                exit_counts[n_exits] += 1
+            # print(exit_counts)
+
             # Para checar se os ângulos de corredores são válidos: ver quantas vezes o ângulo foi medido. Se for menor
             # que um limite (por exemplo, 70%), não considerar.
             if not angles_dict:
                 angles_dict = {angle: 1 for angle in angles}
             else:
-                print(angles_dict)
                 angles_dict['count'] += 1
                 for angle in angles:
                     if angle in angles_dict:
@@ -468,7 +696,13 @@ class TopologicalMapping:
             y_pos.append(y_bifurcation)
             self.draw_graph()
 
+        max_exit_count = 0
+        for n in exit_counts:
+            if exit_counts[n] > max_exit_count:
+                max_exit_count = n
+
         print(f'Number of measurements in bifurcation: {angles_dict["count"]}')
+        print(f'Number of exits in bifurcation: {max_exit_count}')
 
         filtered_angles = []
         for angle_key in angles_dict.keys():
@@ -478,7 +712,9 @@ class TopologicalMapping:
                 filtered_angles.append(angle_key)
 
         node_position = np.round((np.mean(x_pos), np.mean(y_pos)), 2)
-        return node_position[0], node_position[1], filtered_angles
+        # return node_position[0], node_position[1], filtered_angles
+
+        return node_position[0], node_position[1], max_exit_count
 
     def find_neighbour_of_new_node(self):
         if self.last_visited_node is None:
@@ -494,6 +730,10 @@ class TopologicalMapping:
                 or node_two_type == 'dead end')
 
     def check_repeated_nodes(self):
+        """
+        Uses node coordinates to remove repeated nodes (nodes that are too close from each other).
+        Returns: None
+        """
         node_positions = nx.get_node_attributes(self.G, 'pos')
         node_types = nx.get_node_attributes(self.G, 'type')
         for i in range(self.G.number_of_nodes()):
@@ -519,6 +759,9 @@ class TopologicalMapping:
                         if self.G.nodes[i]['pos'] == self.G.nodes[k]['pos']:
                             continue
                         self.G.add_edge(i, k)
+
+                    # The repeated node is always the last one added, this is why the last column/row is being deleted
+                    self.distance_matrix = self.distance_matrix[:-1, :-1]
                     break
 
     def dead_end_detected(self):
@@ -542,6 +785,9 @@ class TopologicalMapping:
 
         pos = nx.get_node_attributes(self.G, 'pos')
         labels = nx.get_node_attributes(self.G, 'angles')
+
+        edge_labels = nx.get_edge_attributes(self.G, 'dist_from_last_node')
+        nx.draw_networkx_edge_labels(self.G, pos, edge_labels=edge_labels)
 
         nx.draw(self.G, pos, node_color=color_map)
         nx.draw_networkx_labels(self.G, pos, labels)
@@ -572,14 +818,15 @@ class TopologicalMapping:
         while not rospy.is_shutdown():
             self.read_state_data_and_add_node_to_graph()
             self.draw_graph()
-            self.check_repeated_nodes()
+            # Not using coordinates to check for repeated nodes
+            # self.check_repeated_nodes()
             if self.right_angles:
                 self.update_node_positions()
             self.rate.sleep()
 
 
 if __name__ == '__main__':
-    node_name = "toplogical_mapping"
+    node_name = "topological_mapping"
     print(node_name)
     # right_angles indicates if the intersections are in a 90-degree angle
     service = TopologicalMapping(name=node_name, right_angles=False)
