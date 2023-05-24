@@ -79,8 +79,10 @@ class DuctExplorer:
         self.kf = 1
         # Linear speed reference
         self.vr = 0.25
+        # epsilon: distance from wall
         # simulation
-        self.epsilon = 0.6
+        # self.epsilon = 0.6
+        self.epsilon = 0.75
         # CORO corridor
         # epsilon = 1.25
         self.print_parameters()

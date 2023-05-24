@@ -6,6 +6,8 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 
+from enum import IntEnum
+
 import cv2
 from math import hypot, atan, atan2, sqrt
 from scipy import signal
@@ -18,6 +20,12 @@ from sensor_msgs.msg import LaserScan, Imu, JointState
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from utils.bib_espeleo_differential import EspeleoDifferential
+
+
+class NodeType(IntEnum):
+    Bifurcation: int = 1
+    DeadEnd: int = 2
+    Other: int = 3
 
 
 class TopologicalMapping:
@@ -38,6 +46,7 @@ class TopologicalMapping:
         self.started_pose = False
         self.started_state = False
         self.started_laser = False
+        self.started_imu = False
 
         # Times used to integrate velocity to pose
         self.current_time = 0.0
@@ -57,8 +66,8 @@ class TopologicalMapping:
         self.adjacency_matrix = np.ones((1, 1)) * 3
         # First node has a distance of 0 from itself
         self.distance_matrix = np.zeros((1, 1))
-        # It is considered that the init node does not have any neighbours
-        self.neighbour_count_list = np.array([0])
+        # It is considered that the init node does not have any neighbors
+        self.neighbor_count_list = np.array([0])
 
         self.state = 'none'
         self.previous_state = self.state
@@ -243,11 +252,11 @@ class TopologicalMapping:
         dt = self.current_time - self.last_time
         self.last_time = self.current_time
 
-        v_espeleo = self.espeleo.wheel_radius * (abs(v_r) + abs(v_l)) / 2
+        v_espeleo = self.espeleo.wheel_radius * (v_r + v_l) / 2
         # Integrations
         dist_dt = v_espeleo * dt  # if v_espeleo * dt > 0.005 else 0
 
-        self.distance_from_last_node += dist_dt
+        self.distance_from_last_node += abs(dist_dt)
 
     def add_first_node(self):
         self.G.add_node(self.node_count, pos=(self.robot_pos[0], self.robot_pos[1]), type='start', angles=[])
@@ -261,9 +270,13 @@ class TopologicalMapping:
                     new_points.remove(points[j])
         return new_points
 
-    def estimate_bifurcation_position(self, local_minima_x, local_minima_y):
-        x_robot = self.robot_pos[0]
-        y_robot = self.robot_pos[1]
+    def estimate_bifurcation_position(self, local_minima_x, local_minima_y, use_robot_position=True):
+        x_robot = 0
+        y_robot = 0
+
+        if use_robot_position:
+            x_robot = self.robot_pos[0]
+            y_robot = self.robot_pos[1]
         if self.state is None or 'Bifurcation' not in self.state:
             return [None, None]
 
@@ -284,11 +297,11 @@ class TopologicalMapping:
         # bifurcation_in_world_frame = bifurcation_in_robot_frame + self.robot_pos[:1]
         return np.mean(points_in_range, axis=0)
 
-    def get_bifurcation_position(self):
+    def get_bifurcation_position(self, use_robot_position=True):
         ranges = self.laser['ranges']
         angles = self.laser['angles']
 
-        # The variable 'adjacent_beam_to_check' indicates how many beams in the neighourhood should be checked
+        # The variable 'adjacent_beam_to_check' indicates how many beams in the neighbourhood should be checked
         # to check if a beam is or is not a local minima
         adjacent_beam_to_check = 8
         m = int(adjacent_beam_to_check / 2)
@@ -302,17 +315,27 @@ class TopologicalMapping:
         y_diff = diff_ranges * np.sin(diff_angles)
 
         estimated_bifurcation = self.estimate_bifurcation_position(local_minima_x=x_diff,
-                                                                   local_minima_y=y_diff)
+                                                                   local_minima_y=y_diff,
+                                                                   use_robot_position=use_robot_position)
         return estimated_bifurcation
 
     def add_node_to_graph(self, node_type):
         original_state = self.state
         dist_from_last_node = np.round(self.distance_from_last_node, 2)
 
-        if dist_from_last_node < 0.5:
+        if dist_from_last_node < 1.0 and not self.last_node_is_dead_end:
             # Only consider a position as new node only if it is 0.5 m far from the last node
             self.wait_for_new_state(original_state)
             return
+
+        if node_type == 'bifurcation':
+            # Distance relative to the center of bifurcation -> use laser readings
+            bifurcation_pos = self.get_bifurcation_position(use_robot_position=False)
+            if not bifurcation_pos[0]:
+                bifurcation_pos = [0, 0]
+            dist_to_bifurcation = self.euclidian_distance(bifurcation_pos, [0, 0])
+            dist_from_last_node += dist_to_bifurcation
+            dist_from_last_node = round(dist_from_last_node, 2)
 
         if self.last_node_is_dead_end:
             self.last_visited_node = list(self.G.edges(self.node_count))[0][1]
@@ -325,20 +348,21 @@ class TopologicalMapping:
         # x_pos, y_pos, angles = self.wait_for_new_state(original_state, dead_end=is_dead_end)
         # self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type, angles=np.round(np.rad2deg(angles)).tolist())
 
-        x_pos, y_pos, number_of_neighbours = self.wait_for_new_state(original_state, dead_end=is_dead_end)
-        self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type, angles=number_of_neighbours)
+        x_pos, y_pos, number_of_neighbors = self.wait_for_new_state(original_state, dead_end=is_dead_end)
+        self.G.add_node(self.node_count + 1, pos=(x_pos, y_pos), type=node_type, angles=number_of_neighbors)
 
-        neighbour_node = self.find_neighbour_of_new_node()
-        node_i = neighbour_node
+        neighbor_node = self.find_neighbor_of_new_node()
+        node_i = neighbor_node
 
         if self.previous_node is not None:
             node_i = self.previous_node
 
+        # dist_from_last_node = round((dist_from_last_node + self.distance_from_last_node)/2, 2)
         self.update_matrices(node_i=node_i, node_j=self.node_count + 1,
                              distance_between_nodes=dist_from_last_node,
-                             neighbour_count=number_of_neighbours)
+                             neighbor_count=number_of_neighbors)
 
-        self.add_edge_to_new_node(neighbour_node, dist_from_last_node=dist_from_last_node)
+        self.add_edge_to_new_node(neighbor_node, dist_from_last_node=dist_from_last_node)
 
         self.__update_graph_information()
 
@@ -356,19 +380,19 @@ class TopologicalMapping:
     @staticmethod
     def str_type_to_int(str_type):
         if str_type == 'bifurcation':
-            return 1
+            return NodeType.Bifurcation
         if str_type == 'dead end':
-            return 2
-        return 3
+            return NodeType.DeadEnd
+        return NodeType.Other
 
-    def update_matrices(self, node_i, node_j, distance_between_nodes, neighbour_count):
+    def update_matrices(self, node_i, node_j, distance_between_nodes, neighbor_count):
         """
-        Updates the distance matrix, adjacency matrix and neighbour count list
+        Updates the distance matrix, adjacency matrix and neighbor count list
         Args:
             node_i: previous node id
             node_j: current node id
             distance_between_nodes: distance between the current and previous nodes
-            neighbour_count: amount of nodes connected to node_j
+            neighbor_count: amount of nodes connected to node_j
         Returns: None
         """
         # Initial node is not considered, since it is not a bifurcation nor a dead end
@@ -403,14 +427,14 @@ class TopologicalMapping:
         self.adjacency_matrix[node_j_idx][node_j_idx] = node_j_type_int
         print('Adj. Matrix:\n', self.adjacency_matrix, '\n', '=' * 45, sep='')
 
-        # Neighbour Count List
+        # neighbor Count List
         if node_j_type == 'dead end':
-            neighbour_count = 1
-        if node_j_idx + 1 > self.neighbour_count_list.shape[0]:
-            self.neighbour_count_list = np.hstack((self.neighbour_count_list, neighbour_count))
+            neighbor_count = 1
+        if node_j_idx + 1 > self.neighbor_count_list.shape[0]:
+            self.neighbor_count_list = np.hstack((self.neighbor_count_list, neighbor_count))
         else:
-            self.neighbour_count_list[node_j_idx] = neighbour_count
-        print('Neighbour Count List:\n', self.neighbour_count_list, '\n', '=' * 45, sep='')
+            self.neighbor_count_list[node_j_idx] = neighbor_count
+        print('Neighbor Count List:\n', self.neighbor_count_list, '\n', '=' * 45, sep='')
 
     def get_bifurcation_angles(self):
         """
@@ -419,7 +443,7 @@ class TopologicalMapping:
         Returns: bifurcation angles
         """
         MIN_DIST = 2.5
-        MIN_ANGLE = np.deg2rad(25)
+        MIN_ANGLE = np.deg2rad(30)
 
         laser_ranges = self.laser['ranges']
         laser_angles = self.laser['angles']
@@ -522,7 +546,7 @@ class TopologicalMapping:
                 den = line[2] - line[0]
                 # if den == 0:
                 #     continue
-                angle = atan(num/den)
+                angle = atan(num / den)
                 angle -= robot_angle
                 if angle > np.pi:
                     angle -= 2 * np.pi
@@ -648,12 +672,12 @@ class TopologicalMapping:
         self.last_visited_node = self.node_count + 1
         self.node_count += 1
 
-    def add_edge_to_new_node(self, neighbour_node, dist_from_last_node=0.0):
+    def add_edge_to_new_node(self, neighbor_node, dist_from_last_node=0.0):
         if self.previous_node is not None:
             self.G.add_edge(self.previous_node, self.node_count + 1, dist_from_last_node=dist_from_last_node)
             self.previous_node = None
         else:
-            self.G.add_edge(neighbour_node, self.node_count + 1, dist_from_last_node=dist_from_last_node)
+            self.G.add_edge(neighbor_node, self.node_count + 1, dist_from_last_node=dist_from_last_node)
 
     def wait_for_new_state(self, original_state, dead_end=False):
         x_pos = []
@@ -696,13 +720,20 @@ class TopologicalMapping:
             y_pos.append(y_bifurcation)
             self.draw_graph()
 
+        print(f'Number of measurements in bifurcation: {angles_dict["count"]}')
+        print(f'Probabilities of number of exits in bifurcation:')
         max_exit_count = 0
+        bif_in_max_exit_count = 0
         for n in exit_counts:
             if exit_counts[n] > max_exit_count:
-                max_exit_count = n
+                max_exit_count = exit_counts[n]
+                bif_in_max_exit_count = n
+            if not angles_dict["count"]:
+                continue
+            prob = exit_counts[n] / angles_dict["count"] * 100
+            print(f'- {n}: {round(prob, 2)}%')
 
-        print(f'Number of measurements in bifurcation: {angles_dict["count"]}')
-        print(f'Number of exits in bifurcation: {max_exit_count}')
+        print(f'Number of exits in bifurcation: {bif_in_max_exit_count}')
 
         filtered_angles = []
         for angle_key in angles_dict.keys():
@@ -714,14 +745,14 @@ class TopologicalMapping:
         node_position = np.round((np.mean(x_pos), np.mean(y_pos)), 2)
         # return node_position[0], node_position[1], filtered_angles
 
-        return node_position[0], node_position[1], max_exit_count
+        return node_position[0], node_position[1], bif_in_max_exit_count
 
-    def find_neighbour_of_new_node(self):
+    def find_neighbor_of_new_node(self):
         if self.last_visited_node is None:
-            neighbour_node = self.node_count
+            neighbor_node = self.node_count
         else:
-            neighbour_node = self.last_visited_node
-        return neighbour_node
+            neighbor_node = self.last_visited_node
+        return neighbor_node
 
     @staticmethod
     def _can_not_remove_nodes(node_one_type, node_two_type):
@@ -746,23 +777,159 @@ class TopologicalMapping:
                 # If two nodes are close to each other, it is considered that they are only one node
                 if d < self.__MIN_DIST:
                     self.message_log(f'Nodes {i} and {j} are {d} meters close. Removing {j}.')
-                    # Nodes connected to the repeated node j
-                    nodes_connected = [x[1] for x in self.G.edges(j)]
-                    self.previous_node = i
-                    # Considering the new node position as a mean of the positions of the repeated nodes
-                    self.G.nodes[i]['pos'] = (np.mean([node_positions[i][0], node_positions[j][0]]),
-                                              np.mean([node_positions[i][1], node_positions[j][1]]))
-                    self.G.remove_node(j)
-                    self.node_count -= 1
-                    self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
-                    for k in nodes_connected:
-                        if self.G.nodes[i]['pos'] == self.G.nodes[k]['pos']:
-                            continue
-                        self.G.add_edge(i, k)
-
-                    # The repeated node is always the last one added, this is why the last column/row is being deleted
-                    self.distance_matrix = self.distance_matrix[:-1, :-1]
+                    self.remove_repeated_node(i, j, add_one_in_graph_idx=False)
                     break
+
+    def remove_repeated_node(self, original_node_id, repeated_node_id, add_one_in_graph_idx=True):
+        node_positions = nx.get_node_attributes(self.G, 'pos')
+        node_types = nx.get_node_attributes(self.G, 'type')
+
+        graph_idx_original = original_node_id
+        graph_idx_repeated = repeated_node_id
+        if add_one_in_graph_idx:
+            graph_idx_original = original_node_id + 1
+            graph_idx_repeated = repeated_node_id + 1
+
+        if self._can_not_remove_nodes(node_types[graph_idx_original], node_types[graph_idx_repeated]):
+            self.message_log(f'Not able to remove nodes {graph_idx_original} and {graph_idx_repeated}. Nodes have different types.')
+            return 0
+
+        # Nodes connected to the repeated node
+        nodes_connected = [x[1] for x in self.G.edges(graph_idx_repeated)]
+
+        edges = nx.get_edge_attributes(self.G, 'dist_from_last_node')
+        for edge in edges:
+            if graph_idx_repeated in edge:
+                connected_node = list(set(edge) - set((graph_idx_repeated,)))[0]
+                self.G.add_edge(connected_node, graph_idx_original, dist_from_last_node=edges[edge])
+
+        self.previous_node = graph_idx_original
+        # Considering the new node position as a mean of the positions of the repeated nodes
+        self.G.nodes[graph_idx_original]['pos'] = (np.mean([node_positions[graph_idx_original][0], node_positions[graph_idx_repeated][0]]),
+                                                   np.mean([node_positions[graph_idx_original][1], node_positions[graph_idx_repeated][1]]))
+        self.message_log(f'Removing node {graph_idx_repeated} -> Same as {graph_idx_original}')
+        self.G.remove_node(graph_idx_repeated)
+        self.node_count -= 1
+        self.message_log(f"Total Nodes: {self.G.number_of_nodes()}")
+        for k in nodes_connected:
+            if self.G.nodes[graph_idx_original]['pos'] == self.G.nodes[k]['pos']:
+                continue
+
+        # Updating matrices
+        repeated_node_index = repeated_node_id
+        original_node_id_index = original_node_id
+        if not add_one_in_graph_idx:
+            # The initial node is the graph but not in the matrices
+            repeated_node_index = repeated_node_id - 1
+            original_node_id_index = original_node_id - 1
+        # TODO: get the mean of distances before removing
+        self.distance_matrix = np.delete(arr=self.distance_matrix, obj=repeated_node_index, axis=0)
+        self.distance_matrix = np.delete(arr=self.distance_matrix, obj=repeated_node_index, axis=1)
+
+        self.adjacency_matrix = np.delete(arr=self.adjacency_matrix, obj=repeated_node_index, axis=0)
+        self.adjacency_matrix = np.delete(arr=self.adjacency_matrix, obj=repeated_node_index, axis=1)
+
+        self.neighbor_count_list = np.delete(arr=self.neighbor_count_list, obj=repeated_node_index, axis=0)
+        print('Updated Matrices:')
+        print('Dist. Matrix:\n', self.distance_matrix, '\n', '=' * 45, sep='')
+        print('Adj. Matrix:\n', self.adjacency_matrix, '\n', '=' * 45, sep='')
+        print('Neighbor Count List:\n', self.neighbor_count_list, '\n', '=' * 45, sep='')
+        return 1
+
+    def check_if_nodes_are_repeated_topologic(self):
+        """
+        1 - Check how many neighbors the nodes have in the distance matrix (DM)
+        2 - Compare these values with neighbor count list (NCL)
+        3 - If there are more neighbors in DM, it means we are at a node tha has repeated neighbors
+        4 - Loop each node that has more neighbors in DM than in NCL
+        5 - Get the types of the neighbors of each node from step 4
+        6 - Check which node type is repeated
+        7 - Compare the distance from node in step 4 to each node that have the same type found in 6
+        8 - The one with the closest distance is considered to be the repeated one
+        9 - The node that was last added is removed
+        Returns: None
+        """
+        # First, getting number of neighbors according to distance matrix
+        neighbors_dm = np.zeros(self.distance_matrix.shape[0])
+        for row in range(self.distance_matrix.shape[0]):
+            # Getting number of elements in row that are different of 0 and -1
+            number_of_neighbors = np.sum((self.distance_matrix[row][:] != 0) * (self.distance_matrix[row][:] != -1))
+            neighbors_dm[row] = number_of_neighbors
+
+        # When an element of has_repeated_node is True, it means that an already visited node is being considered as a new one
+        has_repeated_node = neighbors_dm > self.neighbor_count_list
+        nodes_with_repeated_neighbors = np.where(has_repeated_node)[0]
+        for node_id in nodes_with_repeated_neighbors:
+            number_of_repeated_node = neighbors_dm[node_id] - self.neighbor_count_list[node_id]
+            # Check the positions where the row of the node in the distance matrix is not -1 or 0,
+            # then, get the last added nodes (the ones with bigger index) and compare with the older neighbors
+            info = self.get_node_neighbors_info(node_id)
+            check_info = {'bif': 0, 'dead_end': 0, 'count': 0}
+            for neighbor_id in range(self.adjacency_matrix.shape[0]):
+                if neighbor_id == node_id:
+                    # neighbor_id == node_id means the same node is being checked and not two different ones
+                    continue
+
+                if self.adjacency_matrix[node_id][neighbor_id] == NodeType.Bifurcation:
+                    check_info['bif'] += 1
+                    if check_info['bif'] > info['bif']:
+                        node_that_is_repeated = self.discover_which_node_is_repeated(node_with_repeated_neighbors=node_id, repeated_node=neighbor_id)
+                        status = self.remove_repeated_node(original_node_id=node_that_is_repeated, repeated_node_id=neighbor_id)
+                        if not status:
+                            continue
+                        check_info['bif'] -= 1
+                        # Only checking one repeated node at the time
+                        break
+
+                elif self.adjacency_matrix[node_id][neighbor_id] == NodeType.DeadEnd:
+                    check_info['dead_end'] += 1
+                    if check_info['dead_end'] > info['dead_end']:
+                        node_that_is_repeated = self.discover_which_node_is_repeated(node_with_repeated_neighbors=node_id, repeated_node=neighbor_id)
+                        status = self.remove_repeated_node(original_node_id=node_that_is_repeated, repeated_node_id=neighbor_id)
+                        check_info['dead_end'] -= 1
+                        if status:
+                            # Only checking one repeated node at the time
+                            break
+            # Only checking one repeated node at the time, remove break later
+            break
+
+    def discover_which_node_is_repeated(self, node_with_repeated_neighbors, repeated_node):
+        repeated_node_type = self.adjacency_matrix[repeated_node][repeated_node]
+        candidate_nodes = np.where(
+            (self.adjacency_matrix[node_with_repeated_neighbors][:] == repeated_node_type)  # Same node types
+            * (self.distance_matrix[node_with_repeated_neighbors][:] != 0)  # The own node
+            * (self.distance_matrix[node_with_repeated_neighbors][:] != -1)  # Nodes that are not neighbors
+        )[0]
+
+        idx = np.argwhere(candidate_nodes == repeated_node)
+        # Removing the repeated node from the search
+        candidate_nodes = np.delete(candidate_nodes, idx)
+
+        dist_from_repeated_node = self.distance_matrix[node_with_repeated_neighbors][repeated_node]
+        dist_count = float('inf')
+        node_that_is_repeated = 0
+        for node in candidate_nodes:
+            if abs(self.distance_matrix[node_with_repeated_neighbors][node] - dist_from_repeated_node) < dist_count:
+                node_that_is_repeated = node
+                dist_count = abs(self.distance_matrix[node_with_repeated_neighbors][node] - dist_from_repeated_node)
+        return node_that_is_repeated
+
+    def get_node_neighbors_info(self, node_id):
+        info = {'bif': 0, 'dead_end': 0, 'count': 0}
+        for neighbor_id in range(self.adjacency_matrix.shape[0]):
+            if info['count'] >= self.neighbor_count_list[node_id]:
+                # Already checked all the neighbors, if there is anything it will be repeated nodes
+                break
+            if neighbor_id == node_id:
+                # neighbor_id == node_id means the same node is being checked and not two different ones
+                continue
+            if self.adjacency_matrix[node_id][neighbor_id] == NodeType.Bifurcation:
+                info['bif'] += 1
+                info['count'] += 1
+            elif self.adjacency_matrix[node_id][neighbor_id] == NodeType.DeadEnd:
+                info['dead_end'] += 1
+                info['count'] += 1
+        return info
 
     def dead_end_detected(self):
         dead_end = (self.previous_state != self.state
@@ -796,11 +963,11 @@ class TopologicalMapping:
 
     def read_state_data_and_add_node_to_graph(self):
         if 'Bifurcation' in self.state:
-            self.message_log('Detected Bifurcation')
+            self.message_log(f'Detected Bifurcation | Distance from last node: {round(self.distance_from_last_node, 2)}')
             self.add_node_to_graph(node_type='bifurcation')
             self.last_node_is_dead_end = False
         elif self.dead_end_detected():
-            self.message_log('Detected Dead end')
+            self.message_log(f'Detected Dead End | Distance from last node: {round(self.distance_from_last_node, 2)}')
             self.add_node_to_graph(node_type='dead end')
             self.last_node_is_dead_end = True
         self.previous_state = self.state
@@ -820,6 +987,7 @@ class TopologicalMapping:
             self.draw_graph()
             # Not using coordinates to check for repeated nodes
             # self.check_repeated_nodes()
+            self.check_if_nodes_are_repeated_topologic()
             if self.right_angles:
                 self.update_node_positions()
             self.rate.sleep()
