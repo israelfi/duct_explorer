@@ -83,19 +83,24 @@ None
 
 ### Subscribed Topics
 
-- ```/tf```: robot position
+- ```/tf```: robot position (only used to plot the node position in the graph)
 - ```/state```: state where the robot is (described in the next section). Used to define the robot direction (forward or reverse).
+- ```/scan```: data from a 360 degree planar laser
 
 ## How to Interact
 
 Open the following scene in CoppeliaSim:
 
-- maze_map_smooth_corners_velodyne.ttt
+- maze_map_sbai_2023.ttt
 
 This scene uses a model of the EspeloRobô, hence, it is needed to follow this [tutorial](https://github.com/ITVRoC/espeleo_vrep_simulation)
 before in order to set up the simulation parameters.
 
 Enter the following command in the terminal:
+
+```roslaunch espeleo_vrep_simulation espeleo_sim.launch```
+
+Press play in the CoppeliaSim simulation and then, in another terminal, enter this command:
 
 ```roslaunch duct_explorer gallery.launch```
 
