@@ -39,7 +39,7 @@ class DuctExplorer:
         self.vel.angular.y = 0
         self.vel.angular.z = 0
 
-        self.half = 120
+        self.half = 180
         self.started_pose = False
         self.started_laser = False
 
@@ -73,8 +73,8 @@ class DuctExplorer:
         self.vr = 0.25
         # epsilon: distance from wall
         # simulation
-        # self.epsilon = 0.6
-        self.epsilon = 0.8
+        self.epsilon = 0.3
+        # self.epsilon = 0.8
         # CORO corridor
         # epsilon = 1.25
         self.print_parameters()
@@ -231,8 +231,14 @@ class DuctExplorer:
         Control method to follow a corridor in the center of it
         Returns: a tuple with linear and angular velocities in the robot frame
         """
+        signal = 1
         dist_r, phi_r, index_r = self.closest_obstacle(right_side=True, half=self.half)
         dist_l, phi_l, index_l = self.closest_obstacle(right_side=False, half=self.half)
+
+        # if signal == -1:
+        #     aux_dist, aux_phi = dist_r, phi_r
+        #     dist_r, phi_r = dist_l, phi_l
+        #     dist_l, phi_l = aux_dist, aux_phi
 
         alpha = (phi_l - phi_r - pi) / 2.0
 
@@ -244,8 +250,8 @@ class DuctExplorer:
         G = -(2 / pi) * atan(self.kf * D)
         H = sqrt(1 - G * G)
 
-        vx = G * cos(phi_D) + H * cos(phi_T)  # (body)
-        vy = G * sin(phi_D) + H * sin(phi_T)  # (body)
+        vx = (G * cos(phi_D) + H * cos(phi_T) * signal)  # (body)
+        vy = (G * sin(phi_D) * signal + H * sin(phi_T))  # (body)
 
         v = self.vr * vx
         omega = self.vr * (vy / (self.d * 0.5))  # Angular rotation

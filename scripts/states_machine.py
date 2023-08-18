@@ -15,13 +15,18 @@ global started_laser
 started_laser = False
 
 # Ângulo mínimo entre dois possíveis caminhos para que seja considerada evidência de bifurcação
-MIN_ANGLE = 25
+MIN_ANGLE = 30
 # Distância mínima para detectar uma bifurcação
 MIN_DIST = 2.5
+# MIN_DIST = 4.5
 # Distância para deteccção de saída (a missão termina se a distância medida for maior que MAX_DETECT_DIST)
 MAX_DETECT_DIST = float('inf')
 # Distância usada como referência para identificar dead end. Quanto menor, mais perto chega
-RET_DIST = 0.9
+RET_DIST = 0.7
+
+LASER_BEAMS = 360
+angle_increment = 360/LASER_BEAMS
+max_clipped_value = 10
 
 
 def callback_laser(laser):
@@ -37,10 +42,12 @@ def callback_laser(laser):
         if ranges[i] == 0:
             # random value
             ranges[i] = 10
-        if ranges[i] >= MAX_DETECT_DIST:
-            ranges[i] = ranges[i - 1]
+        if ranges[i] >= MAX_DETECT_DIST or ranges[i] == float('inf'):
+            ranges[i] = max_clipped_value
 
     # divide o vetor de ranges
+    # front = ranges[176:528]  # 180º a frente do robô
+    # back = ranges[528:] + ranges[:176]  # 180º atrás do robô
     front = ranges[70:290]  # 180º a frente do robô
     back = ranges[250:] + ranges[:110]  # 180º atrás do robô
     started_laser = True
@@ -49,12 +56,14 @@ def callback_laser(laser):
 def bif_detect_full(laser_data):
     """Recebe o vetor de ranges para cada ângulo obtidos do laser planar para detecção de bifurcação."""
     angles = []
+    j = 0
     for i in range(len(laser_data)):
         # para cada valor presente no vetor de ranges
         laser_data[i] = round(laser_data[i], 2)
         if laser_data[i] > MIN_DIST:
             # caso o valor seja maior que a distância parâmetro mínima, adiciona ângulo no novo vetor
-            angles.append(i)
+            angles.append(j)
+        j += angle_increment
 
     # gera vetor de diferenças entre elementos vizinhos
     angles_diff = [angles[i + 1] - angles[i] for i in range(len(angles) - 1)]
@@ -96,6 +105,7 @@ def bif_detect_180(reverse=False):
 def deadend_detected(laser_data):
     """Recebe o vetor de ranges para cada ângulo obtidos do laser planar para detecção de ponto de retorno"""
     data_avg = round(sum(laser_data[:]) / len(laser_data[:]), 2)
+    print(f'{data_avg = }')
     if data_avg < RET_DIST:
         return True
     else:

@@ -22,7 +22,7 @@ class DuctExplorer:
         self.robot_pos = np.zeros(3)
         self.robot_angles = np.zeros(3)
 
-        self.laser_half = 120
+        # self.laser_half = 120
         self.laser = {'ranges': np.array([]),
                       'angles': np.array([]),
                       'angle_min': 0.0,
@@ -33,6 +33,8 @@ class DuctExplorer:
                               'angle_min': 0.0,
                               'angle_max': 0.0,
                               'angle_increment': 0.0}
+
+        self.half = int(360 / 2)
 
         self.vel = Twist()
         self.vel.linear.x = 0
@@ -78,11 +80,11 @@ class DuctExplorer:
         # Convergence gain
         self.kf = 1
         # Linear speed reference
-        self.vr = 0.25
+        self.vr = 0.4
         # epsilon: distance from wall
         # simulation
-        # self.epsilon = 0.6
-        self.epsilon = 0.75
+        self.epsilon = 0.3
+        # self.epsilon = 1.25
         # CORO corridor
         # epsilon = 1.25
         self.print_parameters()
@@ -245,6 +247,34 @@ class DuctExplorer:
             angle_of_closest_obstacle = laser_data['angles'][half:][index]
         return min_dist, angle_of_closest_obstacle, index
 
+    def follow_corridor(self) -> Tuple[float, float]:
+        """
+        Control method to follow a corridor in the center of it
+        Returns: a tuple with linear and angular velocities in the robot frame
+        """
+        dist_r, phi_r, index_r = self.closest_obstacle(right_side=True, half=self.half)
+        dist_l, phi_l, index_l = self.closest_obstacle(right_side=False, half=self.half)
+
+        alpha = (phi_l - phi_r - pi) / 2.0
+
+        phi_D = phi_r + alpha
+        phi_T = phi_r + alpha + pi / 2.0
+
+        D = (dist_l - dist_r) / (2 * cos(alpha))
+
+        G = -(2 / pi) * atan(self.kf * D)
+        H = sqrt(1 - G * G)
+
+        signal = -1 * self.reverse_mode + 1 * (not self.reverse_mode)
+
+        vx = (G * cos(phi_D) + H * cos(phi_T) * signal)  # (body)
+        vy = (G * sin(phi_D) * signal + H * sin(phi_T))  # (body)
+
+        v = self.vr * vx
+        omega = self.vr * (vy / (self.d * 0.5))  # Angular rotation
+
+        return v, omega
+
     def follow_wall(self) -> tuple:
         """
         Implementation of a vector field based control that makes the robot follow a tangent path alongside a wall
@@ -273,7 +303,7 @@ class DuctExplorer:
         Returns: None
         """
         self.message_log('Waiting for messages in subscribed topics...')
-        while not self.started_laser:
+        while not self.started_laser or not self.started_state:
             continue
         self.message_log('Topics ready!')
 
@@ -305,7 +335,10 @@ class DuctExplorer:
         self.wait_for_subscribed_topics()
         while not rospy.is_shutdown():
             self.check_robot_direction()
-            v, w = self.follow_wall()
+            if 'Bifurcation' in self.state:
+                v, w = self.follow_wall()
+            else:
+                v, w = self.follow_corridor()
             if self.state == 'Exit':
                 v, w = 0, 0
             self.publish_speeds(linear=v, angular=w)
